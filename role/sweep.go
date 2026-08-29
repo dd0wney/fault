@@ -37,61 +37,60 @@ func Sweep(t *testing.T, target Role) iter.Seq2[int, *Points] {
 // walk runs the sweep and returns a diagnostic rather than failing a test.
 //
 // For n = 1, 2, 3, ... it arms the target's n-th operation, yields, and reads
-// what came back. Four of the five cases are the same as the core package's:
-// the caller broke out, the point fired, nothing fired on pass 1, nothing fired
-// later. The fifth is this package's reason to exist.
+// what came back. Four of the five outcomes are the core package's: the caller
+// broke out, the point fired, nothing fired on pass 1, nothing fired later. The
+// fifth is this package's reason to exist.
 //
-// TODO(ddowney): the stability check, between the yield and the termination
-// test.
+// # Why stability is checked and not assumed
 //
-// A per-role counter is only meaningful while the role's own sequence is the
-// same on every run, and that is a property of the CALLER'S SCENARIO, not of
-// this package. It cannot be verified once at the start and assumed after: it
-// has to be re-checked on every pass.
+// A per-role counter is meaningful only while the role's own sequence is the
+// same on every run, and that is a property of the CALLER'S SCENARIO rather
+// than of this package. It cannot be verified once at the start and assumed
+// after, so it is re-checked on every pass.
 //
-// Compare this pass's trace against the IMMEDIATELY PREVIOUS pass's, and stop
-// the comparison at min(n-1, len(trace), len(prev)).
+// # Why the reference is the previous pass
 //
-// The bound does two jobs at once, and they coincide. It stops at what the
-// current pass has not yet faulted, AND at what the previous pass had not yet
-// faulted -- pass n-1's injection point is index n-2, so indices 0..n-2 are
-// exactly its pre-fault operations plus the faulted operation itself.
+// The comparison stops at min(n-1, len(trace), len(prev)), and that bound does
+// two jobs which happen to coincide. It stops at what this pass has not yet
+// faulted, and at what the previous pass had not yet faulted -- pass n-1
+// faulted its operation at index n-2, so indices 0..n-2 are exactly its
+// pre-fault operations plus the faulted one.
 //
-// That is why the reference must be the previous pass and not pass 1. Pass 1
-// faults operation 1, so its injection point is index 0 and everything after
-// that in its trace is post-fault. Pass 1 is a valid reference for index 0 and
-// for nothing else. Comparing against it keeps the first job and loses the
-// second. (Transitivity recovers most of the rest: index k is compared at every
-// pass from k+2 onward, so pairwise agreement chains back. The one index
-// compared only once is the newest at the final pass.)
+// Pass 1 would not serve. It faults operation 1, so its injection point is
+// index 0 and everything after that in its trace is post-fault: a valid
+// reference for index 0 and for nothing else. Using it would keep the first job
+// and lose the second.
+//
+// Transitivity recovers most of what pairwise comparison gives up: index k is
+// compared at every pass from k+2 onward, so agreements chain back. The one
+// index compared exactly once is the newest at the final pass.
 //
 // Beyond the injection point the sequences legitimately diverge, because the
-// fault changed what happened next -- compare whole traces and every sweep
-// fails at pass two.
+// fault changed what happened next. Comparing whole traces fails every sweep
+// with a cleanup path at pass two.
 //
-// A SHORTENING trace is the case min() hides, and it is instability rather than
-// an artefact. If the fault fired on operation n then n operations were
-// attempted, so the target's trace must hold at least n entries; fewer means
-// the role did less work for a reason unrelated to the fault. Check it
-// explicitly, because min() silently compares fewer indices and passes:
+// # Why a shortening trace needs its own check
 //
-//	if p.hasFired() && len(trace) < n { ... }
+// A shorter trace makes min() compare fewer indices, find them equal, and pass,
+// so the prefix comparison cannot see a role that simply did less work.
 //
-// The graphdb implementation does not have this check. The argument for it is
-// theirs and it has not been run there either, so treat it as reasoned rather
-// than measured -- and note that a trace shorter than n while the point did NOT
-// fire is the termination condition, already handled below.
+// The signal is at the TERMINATING pass. The previous pass faulted operation
+// n-1, so the role performs at least n-1 operations; fewer here means it
+// shortened. Two nearby formulations do not work. Comparing against the
+// previous trace's LENGTH is wrong, because a terminating pass runs no cleanup
+// and is legitimately shorter than every faulting pass before it. And checking
+// it on a pass that DID fire is unreachable, because Op appends to the trace
+// before testing armed, so a fired pass holds exactly n entries by
+// construction.
 //
-// On a divergence, wrap errUnstable with a message naming the position, both
-// operations, and what it means. That message is the entire deliverable when
-// this fires, and the reader has to be able to act on it:
+// # The message
 //
-//	role "flush" is not stable: at operation 3 of pass 5 it did "sync wal.log",
-//	and in the previous pass it did "write wal.log". "The N-th operation" names
-//	a different operation on each run, so this sweep proves nothing.
+// Both diagnostics name the position and the counts, not only the operations.
+// When this fires the message is the entire deliverable, and a reader with the
+// names but not the position still has to find it by hand.
 //
-// The bound belongs here and not in an adapter. It is a fact about what a sweep
-// does, and an adapter author would get it wrong.
+// The bound belongs here rather than in an adapter: it is a fact about what a
+// sweep does, and an adapter author would get it wrong.
 func walk(t *testing.T, target Role, yield func(int, *Points) bool) error {
 	t.Helper()
 
