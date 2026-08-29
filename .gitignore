@@ -2,3 +2,6 @@
 *.test
 *.out
 coverage/
+
+# Binaries a bare `go build` drops in a main package directory
+/tools/coupling/coupling

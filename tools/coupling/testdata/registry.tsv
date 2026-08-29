@@ -1,0 +1,3 @@
+# id	kind	package	symbol	lines	note
+C1	control	fixture	Load			Load decides whether Save runs
+C2	data	fixture	Save			Save depends on bytes it does not own

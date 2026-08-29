@@ -80,3 +80,14 @@ jobs:
         run: |
           go build ./...
           go vet ./...
+          go test -count=1 ./...
+          go test -race -count=1 ./...
+
+      # A skip is a gap, not a pass. The count is printed so an unwritten
+      # function stays visible in the log rather than hiding behind a green
+      # tick, and so a skip that should have become a real test gets noticed.
+      - name: report skipped tests
+        working-directory: tools
+        run: |
+          skipped="$(go test -v ./... 2>&1 | grep -c '^ *--- SKIP' || true)"
+          echo "tools: $skipped test(s) skipped because a function is not written yet"
