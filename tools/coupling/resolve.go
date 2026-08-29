@@ -46,6 +46,9 @@ func resolve(root string, couplings []Coupling) ([]Site, error) {
 	module := modulePath(root)
 
 	for _, c := range couplings {
+		if c.Kind == "exempt" {
+			continue // a claim about a package, not a site to measure
+		}
 		rel := strings.TrimPrefix(strings.TrimPrefix(c.Package, module), "/")
 		if rel == "" {
 			rel = "."

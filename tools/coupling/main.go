@@ -40,6 +40,11 @@ func run(root, registry, profile, format string, stdout, stderr io.Writer) int {
 		return exitCannotRun
 	}
 
+	if err := checkComplete(root, couplings); err != nil {
+		fmt.Fprintf(stderr, "coupling: %v\n", err)
+		return exitCannotRun
+	}
+
 	sites, err := resolve(root, couplings)
 	if err != nil {
 		fmt.Fprintf(stderr, "coupling: the registry and the code disagree: %v\n", err)

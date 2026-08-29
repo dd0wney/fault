@@ -51,7 +51,8 @@ import (
 	"strings"
 )
 
-// Coupling is one row of the registry: an interface a human declared.
+// Coupling is one row of the registry: an interface a human declared, or a
+// package a human declared has none.
 type Coupling struct {
 	ID      string // stable identifier, referenced by the architecture document
 	Kind    string // "data" or "control"
@@ -106,8 +107,17 @@ func parseRegistry(r io.Reader) ([]Coupling, error) {
 
 		switch c.Kind {
 		case "data", "control":
+		case "exempt":
+			// A package with no coupling is a claim, and a claim belongs in the
+			// registry where a reviewer sees it. Without this the check in §5
+			// could only be a warning, and a warning that is not a gate is a
+			// line people learn to scroll past.
+			if c.Note == "" {
+				return nil, fmt.Errorf("line %d: %s exempts %s with no reason given",
+					line, c.ID, c.Package)
+			}
 		default:
-			return nil, fmt.Errorf("line %d: kind %q, want \"data\" or \"control\"", line, c.Kind)
+			return nil, fmt.Errorf("line %d: kind %q, want \"data\", \"control\" or \"exempt\"", line, c.Kind)
 		}
 		if c.Lines != "" {
 			if _, _, err := parseLineRange(c.Lines); err != nil {

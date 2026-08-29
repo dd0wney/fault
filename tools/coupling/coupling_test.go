@@ -213,3 +213,70 @@ func TestExitCodes(t *testing.T) {
 		})
 	}
 }
+
+// --- Registry completeness ---
+//
+// The registry is DATA the gate reads to decide what to look at, and data
+// drifts from the thing it describes. A package added and not declared escapes
+// the measure entirely while the gate reports a pass.
+
+func TestCheckCompleteRefusesAnUndeclaredPackage(t *testing.T) {
+	err := checkComplete("testdata/mod", []Coupling{
+		{ID: "C1", Kind: "control", Package: "example.com/mod/a", Symbol: "A"},
+	})
+	if err == nil {
+		t.Fatal("checkComplete accepted a module whose package b is undeclared")
+	}
+	if !strings.Contains(err.Error(), "example.com/mod/b") {
+		t.Errorf("the diagnostic must name the package a reader has to act on: %v", err)
+	}
+}
+
+func TestAnExemptionSatisfiesCompleteness(t *testing.T) {
+	err := checkComplete("testdata/mod", []Coupling{
+		{ID: "C1", Kind: "control", Package: "example.com/mod/a", Symbol: "A"},
+		{ID: "X1", Kind: "exempt", Package: "example.com/mod/b", Symbol: "-", Note: "no boundary here"},
+	})
+	if err != nil {
+		t.Errorf("checkComplete = %v, want nil: an exemption is a declaration", err)
+	}
+}
+
+// An exemption is a claim, and a claim with no reason is a silence with extra
+// steps. parseRegistry refuses it, so a reviewer sees the reason in the diff
+// that introduces the exemption.
+func TestAnExemptionNeedsAReason(t *testing.T) {
+	_, err := parseRegistry(strings.NewReader("X1\texempt\texample.com/mod/b\t-\t\t\n"))
+	if err == nil {
+		t.Error("parseRegistry accepted an exemption with no reason")
+	}
+}
+
+// A regression test for a defect in this file: filepath.WalkDir yields the root
+// first with d.Name() == "." for a relative root, and a dotted-directory skip
+// matched it -- ending the walk before it started. The check then reported a
+// pass having examined nothing, which is the exact failure this tool exists to
+// find.
+//
+// The tell was that it passed on a registry with a package deliberately
+// removed. A completeness check that never refuses is not one.
+func TestCheckCompleteRefusesWhenItExaminesNothing(t *testing.T) {
+	// A directory with no Go packages under it at all.
+	empty := t.TempDir()
+	if err := checkComplete(empty, []Coupling{
+		{ID: "C1", Kind: "control", Package: "whatever", Symbol: "A"},
+	}); err == nil {
+		t.Error("checkComplete accepted a tree with no packages, want a refusal")
+	}
+
+	// And the case that hid the bug: a relative root of ".".
+	if err := os.Chdir("testdata/mod"); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir("../..")
+	if err := checkComplete(".", []Coupling{
+		{ID: "C1", Kind: "control", Package: "example.com/mod/a", Symbol: "A"},
+	}); err == nil {
+		t.Error("with root \".\", checkComplete accepted an undeclared package: the walk was skipped")
+	}
+}
