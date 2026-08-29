@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test ${{ matrix.os }} go${{ matrix.go }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1.23 is the module's floor, and a floor nothing tests is a guess.
+        # stable catches what a new toolchain changes.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        go: ['1.23', 'stable']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+
+      - run: go build ./...
+      - run: go vet ./...
+
+      # -count=1 defeats the test cache. A cached pass is a claim about an
+      # earlier run, not this one.
+      - run: go test -count=1 ./...
+
+      # The race detector on Windows needs a C toolchain, and the module has no
+      # Windows-specific concurrency. Linux and macOS cover the mutex.
+      - name: race detector
+        if: runner.os != 'Windows'
+        run: go test -race -count=1 ./...
+
+  checks:
+    name: format and dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+          echo "gofmt clean"
+
+      # The selftest runs FIRST, on purpose. A gate that cannot report a
+      # violation and a gate with nothing to report print the same thing, so the
+      # gate proves it works before its result is believed.
+      - name: the dependency gate can report a violation
+        run: ./scripts/no-external-deps-selftest.sh
+
+      - name: no dependency outside the standard library
+        run: ./scripts/no-external-deps.sh
+
+  tools:
+    name: tools module
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # tools/ is a separate module at go 1.24, so the library keeps its
+          # 1.23 floor while the gates can use tool directives.
+          go-version: stable
+      - working-directory: tools
+        run: |
+          go build ./...
+          go vet ./...
