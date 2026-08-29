@@ -76,6 +76,25 @@ while IFS=$'\t' read -r pkg floor rest; do
     exit 2
   fi
 
+  # A mutant that was never evaluated is not a result. The graphdb session hit
+  # the sharp version of this with a different tool: all 88 mutants of one
+  # package timed out, and it reported 100% efficacy from the single mutant it
+  # managed to run. Two identical invocations gave 100% and 0%.
+  SUMMARY="$(printf '%s\n' "$OUT" | sed -n 's/.*(\(.*\)total is \([0-9]*\)).*/\1|\2/p' | tail -1)"
+  TOTAL="${SUMMARY##*|}"
+  SKIPPED="$(printf '%s\n' "$OUT" | sed -n 's/.*, \([0-9]*\) skipped.*/\1/p' | tail -1)"
+  if [ -z "$TOTAL" ] || [ "$TOTAL" = 0 ]; then
+    echo "mutation: $pkg produced no mutants at all, so the score above is not one" >&2
+    echo "mutation: a run that generates nothing looks exactly like a package" >&2
+    echo "mutation: with nothing to find — refusing to report a pass" >&2
+    exit 2
+  fi
+  if [ -n "${SKIPPED:-}" ] && awk -v s="$SKIPPED" -v t="$TOTAL" 'BEGIN { exit !(s > t / 10) }'; then
+    echo "mutation: $pkg skipped $SKIPPED of $TOTAL mutants. Those were never" >&2
+    echo "mutation: evaluated, so the score above is not one — refusing it" >&2
+    exit 2
+  fi
+
   if awk -v s="$SCORE" -v f="$floor" 'BEGIN { exit !(s + 1e-9 < f) }'; then
     printf '  %-12s %s  BELOW the recorded floor of %s\n' "$pkg" "$SCORE" "$floor"
     FAILED=1
