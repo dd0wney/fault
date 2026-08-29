@@ -78,6 +78,18 @@ jobs:
       - name: no dependency outside the standard library
         run: ./scripts/no-external-deps.sh
 
+      # Trivially clean while the module has zero dependencies, which is the
+      # point: it costs one job now and starts earning the moment that changes.
+      #
+      # gosec is deliberately NOT here. Its only finding on this module is a
+      # false positive -- G304 at fs/os.go, where opening a caller-supplied path
+      # is the function's entire purpose -- so adopting it would mean suppressing
+      # the sole thing it says, and the suppression is what people learn.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
   tools:
     name: tools module
     runs-on: ubuntu-latest

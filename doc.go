@@ -137,6 +137,64 @@
 // exactly right, so counting passes never proves the injected error is
 // returned: assert on the error as well.
 //
+// # Security properties
+//
+// Three defect classes are reachable by a sweep and by almost nothing else.
+// None needs anything beyond [Sweep] and [Points.Trip] -- the predicate in the
+// loop body is what changes.
+//
+// # Fail closed
+//
+// A guard that reads its policy from somewhere can fail to read it. Whether it
+// then denies or allows is a decision, and it is usually made by whichever
+// branch the author wrote first:
+//
+//	for n, p := range fault.Sweep(t) {
+//		allowed, err := guard.Check(faultfs.New(p, faultfs.OS()), bob, secret)
+//		if err != nil && allowed {
+//			t.Errorf("op %d failed and the guard still allowed access: %v", n, err)
+//		}
+//	}
+//
+// Every operation in the authorisation path -- opening the policy, reading it,
+// closing it -- becomes a separate test, in order.
+//
+// # Error indistinguishability
+//
+// A guard may leak the existence of a resource by answering differently for one
+// that exists and one that does not. Ordinary tests miss it because both
+// answers are errors; the leak is in which error.
+//
+// Compare what two principals see, rather than asserting what either should
+// see:
+//
+//	for n, p := range fault.Sweep(t) {
+//		fsys := faultfs.New(p, faultfs.OS())
+//		existing := describe(guard.Check(fsys, bob, exists))
+//		absent := describe(guard.Check(fsys, bob, doesNotExist))
+//		if existing != absent {
+//			t.Errorf("op %d: an unauthorised caller can tell the two apart: %q vs %q",
+//				n, existing, absent)
+//		}
+//	}
+//
+// Like the adapter predicate table, this asserts agreement rather than
+// correctness, so it cannot encode the same misunderstanding twice. It is worth
+// the most on the passes where the filesystem misbehaves: a guard that answers
+// uniformly on the happy path often stops doing so once a read fails.
+//
+// # Cleanup on the unwind path
+//
+// A descriptor, a lock, or a temporary file holding plaintext leaks on the path
+// nobody tests, which is the error path. An adapter that counts what it handed
+// out reports it for free -- see [github.com/dd0wney/fault/alloc.Fault.Outstanding].
+//
+// # What this does not cover
+//
+// Untrusted input is a different axis, and go test -fuzz is the tool for it.
+// The two are complementary: a fuzzer varies what the code is given, and a
+// sweep varies what the environment does to it while it works.
+//
 // # Limitations
 //
 // A sweep is meaningful only when one goroutine performs the operations.
