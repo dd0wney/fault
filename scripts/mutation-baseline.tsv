@@ -5,3 +5,4 @@
 ./	0.77	Four survivors, all equivalent in effect: maxOps 511/512/513 and > vs >= on an arbitrary bound, and a removed t.Helper, which changes only which line a failure points at.
 ./fs/	1.00	No survivors.
 ./alloc/	1.00	No survivors. One mutant is reported as duplicated.
+./role/	0.00	scaffold: the stability check is unwritten, so a floor here would be meaningless
