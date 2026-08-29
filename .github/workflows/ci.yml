@@ -38,6 +38,18 @@ jobs:
         if: runner.os != 'Windows'
         run: go test -race -count=1 ./...
 
+      # A skip is a gap, not a pass, and a platform-skipped assertion is the
+      # quiet kind: the job is green and the thing was never executed there.
+      # The graphdb session found the sharper form of this in its own tree -- a
+      # build-tag-gated file that compiles everywhere CI runs and is executed
+      # nowhere. Printing the count per matrix leg makes the asymmetry visible.
+      - name: report skipped tests
+        shell: bash
+        run: |
+          skipped="$(go test -v ./... 2>&1 | grep -c '^ *--- SKIP' || true)"
+          echo "${{ matrix.os }} go${{ matrix.go }}: $skipped test(s) skipped"
+          go test -v ./... 2>&1 | grep '^ *--- SKIP' || true
+
   checks:
     name: format and dependencies
     runs-on: ubuntu-latest
