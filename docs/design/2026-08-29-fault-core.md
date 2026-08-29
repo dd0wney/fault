@@ -511,6 +511,41 @@ Two consequences for the design:
    the fault changed what happened next. Compare whole traces and every sweep
    fails at step two.
 
+#### Testing a mapping with no oracle
+
+`fault/role` will need a mapping from an operation to a printable name, because
+the divergence message and the paste-ready regression pin both read in the
+adapter's vocabulary. That mapping is a set of string literals, and mutation
+testing cannot reach a string literal — no operator rewrites one.
+
+Where an oracle exists, compare against it rather than writing the answer down.
+`fault/fs` does this: it makes the real `os` package fail and compares the `Op`
+it reported, so the test stays correct if `os` ever changes and never records an
+answer that can rot.
+
+Where no oracle exists — and Go offers no runtime lookup from a constant's value
+to its identifier, so this one has none — assert the **structural properties**
+of the mapping instead of its contents:
+
+| Property | The failure it catches |
+|---|---|
+| Every declared operation maps to a **distinct** name | A copy-paste, which is how a wrong name arrives |
+| No declared operation maps to the **fallback** | A new operation added without a case, which is how a name goes missing |
+
+Neither says that `OpSync` is the right spelling of `OpSync`. Together they
+cover the whole realistic failure surface for a switch of this shape, and
+neither requires knowing an answer.
+
+The graphdb project found this in its own `opConstName`, and the cost there is
+worse than a wrong error message: its output is a paste-ready regression test.
+A wrong name produces a test that **compiles, passes, and pins a different
+operation** — a regression test that lies about itself to a reader with no way
+to check. Its fallback returns `"Op(0)"`, and the zero operation is `OpOpen`, so
+an unrecognised value prints something that reads like a valid one.
+
+A second rule follows from that fallback: a mapping's fallback must be
+**unmistakable**, never a plausible member of the set it failed to find.
+
 And a rule for adapter authors, which belongs in the core's documentation rather
 than in each adapter: **an adapter that cannot produce a request-only element
 must not offer `SweepRole` at all.** A network connection is the example — "the
