@@ -1,6 +1,9 @@
 # Build and test output
 *.test
 *.out
+# ...but the coupling tool's fixture profiles ARE the test data, and a
+# gitignored fixture passes locally and vanishes in CI.
+!tools/coupling/testdata/*.out
 coverage/
 
 # Binaries a bare `go build` drops in a main package directory
