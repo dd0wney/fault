@@ -270,13 +270,24 @@ func TestCheckCompleteRefusesWhenItExaminesNothing(t *testing.T) {
 	}
 
 	// And the case that hid the bug: a relative root of ".".
+	//
+	// Asserting only that an error came back is not enough, and the first
+	// version of this test did exactly that -- so it passed with the bug
+	// reintroduced, because the visited==0 guard produced a DIFFERENT error and
+	// "an error" satisfied it. The message has to say which failure this is.
 	if err := os.Chdir("testdata/mod"); err != nil {
 		t.Fatal(err)
 	}
 	defer os.Chdir("../..")
-	if err := checkComplete(".", []Coupling{
+
+	err := checkComplete(".", []Coupling{
 		{ID: "C1", Kind: "control", Package: "example.com/mod/a", Symbol: "A"},
-	}); err == nil {
-		t.Error("with root \".\", checkComplete accepted an undeclared package: the walk was skipped")
+	})
+	if err == nil {
+		t.Fatal("with root \".\", checkComplete accepted an undeclared package")
+	}
+	if !strings.Contains(err.Error(), "example.com/mod/b") {
+		t.Errorf("with root \".\", the walk was skipped: it should have found package b "+
+			"undeclared, and instead reported %v", err)
 	}
 }
