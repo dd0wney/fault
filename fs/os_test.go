@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/dd0wney/fault"
 	faultfs "github.com/dd0wney/fault/fs"
 )
 
@@ -82,5 +83,78 @@ func TestOSPerformsRealOperations(t *testing.T) {
 	}
 	if err := fsys.Remove(name + ".2"); err != nil {
 		t.Errorf("Remove: %v", err)
+	}
+}
+
+// The Op strings were measured against the real os package rather than
+// remembered, and three of the first guesses were wrong: MkdirAll reports
+// "mkdir" and not "mkdirall", ReadDir reports "open" because it opens the
+// directory first, and Rename reports an *os.LinkError.
+//
+// That decision had no test. Mutation testing cannot find it either -- no
+// mutation operator rewrites a string literal -- so a later "tidy-up" that
+// makes the Op strings match the method names would pass the entire suite while
+// making every injected error a lie about what the filesystem does.
+//
+// A deliberate decision that no test asserts is indistinguishable from an
+// accident. This is the assertion.
+func TestInjectedOpStringsMatchTheRealOnes(t *testing.T) {
+	dir := t.TempDir()
+	regular := filepath.Join(dir, "regular")
+	if err := os.WriteFile(regular, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "no-such-directory", "f")
+	real := faultfs.OS()
+
+	// Each case makes the REAL os package fail, and reads the Op it reported.
+	cases := []struct {
+		name string
+		real func() error
+		inj  func(faultfs.FS) error
+	}{
+		{"OpenFile",
+			func() error { _, err := real.OpenFile(missing, os.O_RDONLY, 0); return err },
+			func(f faultfs.FS) error { _, err := f.OpenFile("x", os.O_RDONLY, 0); return err }},
+		{"Remove",
+			func() error { return real.Remove(missing) },
+			func(f faultfs.FS) error { return f.Remove("x") }},
+		{"Stat",
+			func() error { _, err := real.Stat(missing); return err },
+			func(f faultfs.FS) error { _, err := f.Stat("x"); return err }},
+		{"ReadDir",
+			func() error { _, err := real.ReadDir(missing); return err },
+			func(f faultfs.FS) error { _, err := f.ReadDir("d"); return err }},
+		{"MkdirAll",
+			// A directory under a regular file: the real MkdirAll reports the
+			// failing syscall, not the helper that called it.
+			func() error { return real.MkdirAll(filepath.Join(regular, "a", "b"), 0o700) },
+			func(f faultfs.FS) error { return f.MkdirAll("d", 0o700) }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var realPath *os.PathError
+			if !errors.As(tc.real(), &realPath) {
+				t.Fatalf("the control produced no *os.PathError, so this compares nothing")
+			}
+
+			var injected error
+			for n, p := range fault.Sweep(t) {
+				err := tc.inj(faultfs.New(p, newStub()))
+				if n == 1 {
+					injected = err
+				}
+			}
+			var injPath *os.PathError
+			if !errors.As(injected, &injPath) {
+				t.Fatalf("injected error is %T, want *os.PathError: %v", injected, injected)
+			}
+
+			if injPath.Op != realPath.Op {
+				t.Errorf("injected Op = %q, but the real os package reports %q",
+					injPath.Op, realPath.Op)
+			}
+		})
 	}
 }
