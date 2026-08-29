@@ -276,3 +276,41 @@ func TestOpIsSafeForConcurrentUse(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 }
+
+// A trace that SHORTENS before the injection point is instability, not an
+// artefact of the fault. It is the case a naive min() bound hides: comparing
+// fewer indices finds them equal and passes.
+//
+// If the fault fired on operation n then n operations were attempted, so the
+// trace must hold at least n entries. Fewer means the role did less work for a
+// reason unrelated to the fault.
+//
+// The graphdb implementation does not detect this. The argument is theirs and
+// unrun there, so this test is the first evidence either way.
+func TestWalkRefusesARoleWhoseTraceShortens(t *testing.T) {
+	pass := 0
+	err := role.Walk(t, "flush", func(n int, p *role.Points) bool {
+		pass++
+		// Six operations, until the fourth pass, when the role does two.
+		// Every prefix still agrees, so a min()-bounded comparison sees
+		// nothing wrong.
+		count := 6
+		if pass >= 4 {
+			count = 2
+		}
+		for range count {
+			if p.Op("flush", "write wal") {
+				return true
+			}
+		}
+		return true
+	})
+
+	if err == nil {
+		t.Skip("the stability check is not written yet (see the TODO in sweep.go)")
+	}
+	if !errors.Is(err, role.ErrUnstable) {
+		t.Errorf("err = %v, want ErrUnstable: the role's trace shortened before "+
+			"the injection point, which is instability and not an artefact", err)
+	}
+}

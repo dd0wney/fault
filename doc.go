@@ -189,7 +189,30 @@
 // nobody tests, which is the error path. An adapter that counts what it handed
 // out reports it for free -- see [github.com/dd0wney/fault/alloc.Fault.Outstanding].
 //
-// # What this does not cover
+// # Prior art for these properties
+//
+// CERT's secure coding standards state three of them as rules. There is no Go
+// standard -- the coverage is C, C++, Java, Android, Perl and Fortran -- but
+// the rules describe properties rather than syntax, and a sweep is a way to
+// TEST what they state:
+//
+//	ERR33-C  Detect and handle standard library errors
+//	MEM31-C  Free dynamically allocated memory when no longer needed
+//	FIO42-C  Close files when they are no longer needed
+//	FIO46-C  Do not access a closed file
+//
+// ERR33-C is the one this package exists for. A sweep makes every library call
+// fail in turn, so a caller that ignores a return value is caught on the pass
+// that fails it, and on no other. MEM31-C and FIO42-C are violated almost
+// exclusively on error paths -- the happy path frees and closes -- which is why
+// an adapter that counts what it handed out finds them and ordinary tests do
+// not. See [github.com/dd0wney/fault/alloc.Fault.Outstanding].
+//
+// A static checker can find some violations of all four by reading the code. A
+// sweep executes the path instead, which finds the ones no checker can see and
+// misses the ones no test reaches.
+//
+// // # What this does not cover
 //
 // Untrusted input is a different axis, and go test -fuzz is the tool for it.
 // The two are complementary: a fuzzer varies what the code is given, and a

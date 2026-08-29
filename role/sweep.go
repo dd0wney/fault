@@ -49,11 +49,38 @@ func Sweep(t *testing.T, target Role) iter.Seq2[int, *Points] {
 // this package. It cannot be verified once at the start and assumed after: it
 // has to be re-checked on every pass.
 //
-// Compare this pass's trace against the previous pass's, and stop the
-// comparison at min(n-1, len(trace), len(prev)). The bound is the whole trick.
-// Beyond the injection point the two sequences legitimately diverge, because
-// the fault changed what happened next -- compare whole traces and every sweep
+// Compare this pass's trace against the IMMEDIATELY PREVIOUS pass's, and stop
+// the comparison at min(n-1, len(trace), len(prev)).
+//
+// The bound does two jobs at once, and they coincide. It stops at what the
+// current pass has not yet faulted, AND at what the previous pass had not yet
+// faulted -- pass n-1's injection point is index n-2, so indices 0..n-2 are
+// exactly its pre-fault operations plus the faulted operation itself.
+//
+// That is why the reference must be the previous pass and not pass 1. Pass 1
+// faults operation 1, so its injection point is index 0 and everything after
+// that in its trace is post-fault. Pass 1 is a valid reference for index 0 and
+// for nothing else. Comparing against it keeps the first job and loses the
+// second. (Transitivity recovers most of the rest: index k is compared at every
+// pass from k+2 onward, so pairwise agreement chains back. The one index
+// compared only once is the newest at the final pass.)
+//
+// Beyond the injection point the sequences legitimately diverge, because the
+// fault changed what happened next -- compare whole traces and every sweep
 // fails at pass two.
+//
+// A SHORTENING trace is the case min() hides, and it is instability rather than
+// an artefact. If the fault fired on operation n then n operations were
+// attempted, so the target's trace must hold at least n entries; fewer means
+// the role did less work for a reason unrelated to the fault. Check it
+// explicitly, because min() silently compares fewer indices and passes:
+//
+//	if p.hasFired() && len(trace) < n { ... }
+//
+// The graphdb implementation does not have this check. The argument for it is
+// theirs and it has not been run there either, so treat it as reasoned rather
+// than measured -- and note that a trace shorter than n while the point did NOT
+// fire is the termination condition, already handled below.
 //
 // On a divergence, wrap errUnstable with a message naming the position, both
 // operations, and what it means. That message is the entire deliverable when
