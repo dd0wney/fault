@@ -73,7 +73,7 @@ few of them.
 | `fault` | Counts operations and decides which one must fail. Zero dependencies. Three exported names, and they are meant to stay that way. |
 | `fault/fs` | Filesystem adapter. Wraps a real filesystem rather than replacing it, so everything not failed is served for real. |
 | `fault/alloc` | Allocator adapter, with both of SQLite's out-of-memory loops and an outstanding-allocation count. |
-| `fault/role` | Per-actor sweeps for concurrent scenarios. **Scaffold — not finished.** |
+| `fault/role` | Per-actor sweeps for concurrent scenarios, with the stability check that makes them sound. |
 | `fault/tools` | Build-time gates. A separate module, and not part of the library. |
 
 Adapters need `Points` and `Trip` and nothing else, so anyone can write one in
@@ -92,10 +92,12 @@ runs a third loop for this. This library does not.
 **Whole operations only.** A real write may write fewer bytes than asked and
 report no error. A store that ignores the returned count is invisible here.
 
-**One goroutine.** Under concurrency the N-th operation overall is a different
-operation on every run. A sweep over that visits an arbitrary subset of the
-error paths while appearing to visit all of them — and it still terminates, and
-it still passes. `fault/role` is the answer and is not finished.
+**One goroutine, in the core.** Under concurrency the N-th operation overall is
+a different operation on every run. A sweep over that visits an arbitrary subset
+of the error paths while appearing to visit all of them — and it still
+terminates, and it still passes. `fault/role` sweeps one actor at a time and
+verifies on every pass that the actor's own sequence is stable, which is the
+property that makes a per-actor count mean anything.
 
 ## Status
 
@@ -110,7 +112,7 @@ package away.
 ## Development
 
 ```
-go test ./...                          # 74 tests
+go test ./...                          # 79 tests
 ./scripts/mutation-selftest.sh         # prove the mutation gate can fail
 ./scripts/mutation.sh                  # then run it
 ./scripts/no-external-deps.sh          # standard library only

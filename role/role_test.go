@@ -168,18 +168,14 @@ func TestWalkRefusesAnUnstableRole(t *testing.T) {
 		return true
 	})
 
-	// Self-removing: while the check in sweep.go is unwritten the walk simply
-	// completes, and this skips rather than failing. A red CI on main trains
-	// people to ignore it; a skip is a gap, and the CI step that prints skip
-	// counts per matrix leg keeps it visible. The moment the check lands, err
-	// is non-nil and the assertions below run.
-	if err == nil {
-		t.Skip("the stability check is not written yet (see the TODO in sweep.go)")
-	}
 	if !errors.Is(err, role.ErrUnstable) {
 		t.Fatalf("err = %v, want ErrUnstable", err)
 	}
-	for _, want := range []string{"flush", "write wal", "sync wal"} {
+	// The message is the whole deliverable when this fires, so it is asserted
+	// as carefully as the error identity. It must name the role, both
+	// operations, and WHERE they diverged -- a reader with the names but not
+	// the position still has to find it by hand.
+	for _, want := range []string{"flush", "write wal", "sync wal", "operation 1", "pass 2"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the diagnostic must name %q, so a reader can act on it: %v", want, err)
 		}
@@ -306,11 +302,67 @@ func TestWalkRefusesARoleWhoseTraceShortens(t *testing.T) {
 		return true
 	})
 
-	if err == nil {
-		t.Skip("the stability check is not written yet (see the TODO in sweep.go)")
-	}
 	if !errors.Is(err, role.ErrUnstable) {
 		t.Errorf("err = %v, want ErrUnstable: the role's trace shortened before "+
 			"the injection point, which is instability and not an artefact", err)
+	}
+}
+
+// An operation with no role becomes Unknown rather than staying nameless, so it
+// gets a counter of its own like any other non-target role. Left as "", it would
+// still be a distinct key from the target and would still not shift it -- but
+// only by accident, and a later change to the comparison would break it
+// silently.
+func TestAnEmptyRoleBecomesUnknown(t *testing.T) {
+	named, blank := runWithInterloper(t, role.Unknown), runWithInterloper(t, "")
+	if named != blank {
+		t.Errorf("an empty role produced %d passes and %q produced %d: they must behave alike",
+			blank, role.Unknown, named)
+	}
+}
+
+func runWithInterloper(t *testing.T, r role.Role) int {
+	t.Helper()
+	passes := 0
+	err := role.Walk(t, "flush", func(n int, p *role.Points) bool {
+		passes++
+		for range 3 {
+			p.Op(r, "an operation nobody classified")
+			if p.Op("flush", "write wal") {
+				return true
+			}
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatalf("role %q: %v", r, err)
+	}
+	return passes
+}
+
+// The shortening diagnostic must say how many operations it saw and how many it
+// expected, or a reader cannot tell instability from a scenario they mis-wrote.
+func TestTheShorteningDiagnosticNamesBothCounts(t *testing.T) {
+	pass := 0
+	err := role.Walk(t, "flush", func(n int, p *role.Points) bool {
+		pass++
+		count := 6
+		if pass >= 4 {
+			count = 2
+		}
+		for range count {
+			if p.Op("flush", "write wal") {
+				return true
+			}
+		}
+		return true
+	})
+	if !errors.Is(err, role.ErrUnstable) {
+		t.Fatalf("err = %v, want ErrUnstable", err)
+	}
+	for _, want := range []string{"performed 2 operations", "pass 4", "at least 3"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the diagnostic must say %q: %v", want, err)
+		}
 	}
 }

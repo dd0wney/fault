@@ -111,9 +111,21 @@ func walk(t *testing.T, target Role, yield func(int, *Points) bool) error {
 
 		trace := p.traceOf()
 
-		// TODO(ddowney): the stability check goes here, comparing trace
-		// against prev up to the bound described above.
-		_ = prev // remove when the check reads it
+		// The stability check. Compare against the immediately previous pass,
+		// stopping at the bound: it is simultaneously what this pass has not
+		// yet faulted and what the previous pass had not yet faulted, because
+		// pass n-1 faulted its operation at index n-2.
+		if prev != nil {
+			for i := range min(n-1, min(len(trace), len(prev))) {
+				if trace[i] == prev[i] {
+					continue
+				}
+				return fmt.Errorf("%w: role %q did %q as operation %d of pass %d, "+
+					"and %q in the previous pass. \"The N-th operation\" therefore names "+
+					"a different operation on each run, so this sweep proves nothing",
+					errUnstable, target, trace[i], i+1, n, prev[i])
+			}
+		}
 
 		prev = trace
 
@@ -128,6 +140,24 @@ func walk(t *testing.T, target Role, yield func(int, *Points) bool) error {
 		if !p.hasFired() {
 			if n == 1 {
 				return fmt.Errorf("%w: role %q", errNoOperations, target)
+			}
+			// Nothing fired, so this is either the end of the role's sequence
+			// or the role doing less work than last time. The previous pass
+			// faulted operation n-1, so the role performs at least n-1
+			// operations; a shorter trace here means it shortened.
+			//
+			// This is the case the prefix comparison above cannot see: a
+			// shorter trace makes min() compare fewer indices, find them equal,
+			// and pass. The obvious alternative -- comparing against the
+			// previous trace's length -- is wrong, because a terminating pass
+			// runs no cleanup and is legitimately shorter than every faulting
+			// pass before it.
+			if len(trace) < n-1 {
+				return fmt.Errorf("%w: role %q performed %d operations in pass %d "+
+					"and at least %d in the pass before, so the sweep stopped early "+
+					"believing the sequence had ended. It had not: the role did less "+
+					"work for a reason unrelated to the fault, and this sweep proves "+
+					"nothing", errUnstable, target, len(trace), n, n-1)
 			}
 			return nil
 		}
