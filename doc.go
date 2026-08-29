@@ -105,6 +105,38 @@
 // of one scenario rather than two separate counts. A method that returns an
 // unwrapped value is a silent hole in the injection.
 //
+// An adapter needs nothing from this package beyond [Points] and [Points.Trip],
+// so it can live in any module. The adapters here are ordinary consumers of the
+// published API and hold no privileged access.
+//
+// # Testing an adapter
+//
+// Drive the adapter's own tests through [Sweep]. There is no exported way to
+// arm a [Points] directly, and that is deliberate: an adapter tested against a
+// hand-armed point is tested against a situation the sweep may never produce.
+//
+// One trap, which the author of this package fell into twice. Perform the
+// operations on EVERY pass, and make only the assertions conditional:
+//
+//	for n, p := range fault.Sweep(t) {
+//		err := doTheThing(adapter.New(p, base))  // every pass
+//		if n != 1 {
+//			continue                             // assert on one
+//		}
+//		...
+//	}
+//
+// Putting the `continue` first looks equivalent and is not. The skipped passes
+// then perform no operations at all, so the sweep terminates on the first one
+// and reports that the scenario proved nothing -- which is correct, and reads
+// like a bug in the sweep rather than in the test.
+//
+// Two useful shapes fall out. A scenario performing exactly one operation runs
+// exactly two passes, so a pass count of two proves the adapter calls Trip at
+// all. And a method that calls Trip but ignores the answer keeps the pass count
+// exactly right, so counting passes never proves the injected error is
+// returned: assert on the error as well.
+//
 // # Limitations
 //
 // A sweep is meaningful only when one goroutine performs the operations.

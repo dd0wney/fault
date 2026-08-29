@@ -478,6 +478,46 @@ This is the same layering as the adapters. The core stays small because the
 interesting work lives one package away, not because the interesting work was
 cancelled.
 
+#### The trace element invariant
+
+`SweepRole` needs a per-actor trace to verify that the actor's sequence is
+stable — a sweep whose actor is not deterministic terminates, passes, and proves
+nothing, and looks identical to one that works. The graphdb project supplied
+both the check and the rule that makes it sound:
+
+> The trace element must be a function of what the actor **asked for**, and of
+> nothing the environment supplied.
+
+Worked through three adapters:
+
+| Adapter | Correct element | Wrong element, and why |
+|---|---|---|
+| Filesystem | `open wal.log` — the operation and the name | `read 4096 bytes`. A short read is the environment answering. |
+| Allocator | `Bytes(4096)` — the request | The returned pointer or slice. |
+| Clock | The requested duration | The observed elapsed time. |
+
+The failure mode of getting this wrong is the worst kind: every sweep becomes
+unsound in a way that presents as a flaky test.
+
+Two consequences for the design:
+
+1. The adapter supplies the comparable and its string form, because the
+   divergence message is the whole deliverable when the check fires and it must
+   read in the adapter's own vocabulary. An allocator says `Bytes(4096)`, not
+   `alloc#3`.
+2. The core keeps the sentence and the `min(n-1, …)` bound. Comparing only up to
+   the injection point is not adapter knowledge — it is a fact about what a
+   sweep does, and beyond that point the sequences legitimately diverge because
+   the fault changed what happened next. Compare whole traces and every sweep
+   fails at step two.
+
+And a rule for adapter authors, which belongs in the core's documentation rather
+than in each adapter: **an adapter that cannot produce a request-only element
+must not offer `SweepRole` at all.** A network connection is the example — "the
+third read from this connection" is a request, but its size is the peer's
+choice. A stability check that merely fires often is worse than one that refuses
+at construction.
+
 ## 12. Compatibility and proposal constraints
 
 | Constraint | Value | Reason |
