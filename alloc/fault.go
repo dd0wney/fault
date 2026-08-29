@@ -47,17 +47,13 @@ func (a *Fault) Bytes(n int) ([]byte, error) {
 	// on its own. Skip this call and the sweep undercounts the sequence.
 	tripped := a.p.Trip()
 
-	// TODO(ddowney): decide whether to refuse.
+	// Two reasons to refuse, and only one of them is Trip: it fired, or this
+	// is allFrom mode and a refusal has already happened. The second is why
+	// the first has to be recorded -- refusing is the only place that
+	// knowledge can live, because the core has no notion of this mode.
 	//
-	// Two reasons to refuse, and only one of them is Trip:
-	//
-	//  1. Trip fired. Always refuse, in either mode.
-	//  2. This is allFrom mode and a refusal has already happened. Refuse too,
-	//     without consulting Trip -- that call was already made above.
-	//
-	// Record the first case when the mode is allFrom, or the second case can
-	// never become true and NewAllFrom does nothing at all. a.refusing is the
-	// only place that knowledge can live: the core has no notion of this mode.
+	// The decision is made under the lock and acted on outside it, so the
+	// mutex is never held across the call into a.base below.
 	a.mu.Lock()
 	if tripped && a.allFrom {
 		a.refusing = true
