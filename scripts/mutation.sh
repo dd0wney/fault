@@ -20,6 +20,13 @@
 #   1  a package scored below its floor
 #   2  the run could not produce a number worth reading
 #
+# On tool choice: gremlins is not broken here, contrary to an earlier claim in
+# this repository's history. It reports "No results to report" when the target
+# path is "./"-prefixed, and every invocation tried used that form. go-mutesting
+# is kept because it produces 17 mutants per package where gremlins produces 2
+# or 3. Both fail silently in some configuration, which is why the selftest
+# beside this file exists.
+#
 # Exit 2 is the important one. A tool that is missing, a baseline that is
 # absent, or a test suite that already fails all produce a number that means
 # nothing — and a failing baseline suite is the worst, because every mutant then

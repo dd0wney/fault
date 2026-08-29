@@ -104,9 +104,16 @@ jobs:
           go-version: stable
 
       - name: install go-mutesting
-        # gremlins reports "No results to report" on Go 1.27 -- both its dev
-        # build and its pinned v0.6.0 release -- verified against a fixture with
-        # obvious surviving mutants. This fork works.
+        # A correction to an earlier claim in this repository's history: gremlins
+        # is NOT broken on Go 1.27. It reports "No results to report" when the
+        # target path is "./"-prefixed -- "./...", "./fs/", "." -- and every
+        # invocation tried here used that form. An unprefixed "fs" works.
+        #
+        # go-mutesting is kept for a different reason: on the same packages it
+        # produces 17 mutants each where gremlins produces 2 and 3.
+        #
+        # The lesson is about both tools. Each fails silently in at least one
+        # configuration, which is why scripts/mutation-selftest.sh exists.
         run: go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
 
       # The selftest runs first. A gate that cannot report a violation and a
