@@ -20,11 +20,14 @@
 #   1  a package scored below its floor
 #   2  the run could not produce a number worth reading
 #
-# On tool choice: gremlins is not broken here, contrary to an earlier claim in
-# this repository's history. It reports "No results to report" when the target
-# path is "./"-prefixed, and every invocation tried used that form. go-mutesting
-# is kept because it produces 17 mutants per package where gremlins produces 2
-# or 3. Both fail silently in some configuration, which is why the selftest
+# On tool choice: gremlins reported nothing for every invocation tried in this
+# module, and works fine in other repositories on the same Go version with the
+# same target shapes. The variable was never isolated, so the cause is unknown
+# and this file makes no claim about it. go-mutesting is kept on the comparison
+# that does hold: it produces 17 mutants per package here where gremlins
+# produces 2 or 3.
+#
+# Both tools fail silently in some configuration, which is why the selftest
 # beside this file exists.
 #
 # Exit 2 is the important one. A tool that is missing, a baseline that is

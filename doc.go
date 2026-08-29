@@ -66,6 +66,32 @@
 // resource would have returned. The only way to get it right is to make the
 // real thing fail and read what it reported.
 //
+// The full form of rule 4 is sharper than "return a realistic error", and it is
+// worth stating on its own:
+//
+//	An injected error must be indistinguishable from the real one to every
+//	predicate the code under test applies to it.
+//
+// Not merely "an error occurred". If the code asks errors.As(err, &pathErr),
+// the adapter has to answer the way the kernel would. This rule arrived from
+// the graphdb project, where breaking it cost real data: a write-ahead log
+// classified failures with
+//
+//	var pathErr *os.PathError
+//	return errors.As(err, &pathErr)   // true means "a resource failed"
+//
+// and its fault driver returned a bare fmt.Errorf. So an injected device error
+// during recovery was classified as a torn tail instead of a resource failure.
+// Recovery stopped early, the next append reused a log sequence number that
+// already existed on disk, and the record was silently dropped by the next
+// recovery. The tests that injected those faults passed while exercising the
+// wrong branch entirely.
+//
+// The defect is invisible from the operation's side: the call returned an
+// error, as intended. It appears only when you look at what the caller asks of
+// the error. So measure both -- what the real operation returns, and what the
+// code under test interrogates it for.
+//
 // Rule 2 has one principled exception, and an adapter that takes it must say
 // so at the method. A failed close(2) still releases its descriptor, because
 // POSIX guarantees it, so a Close that skips the release leaks one handle per

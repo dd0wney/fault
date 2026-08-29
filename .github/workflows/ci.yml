@@ -104,16 +104,23 @@ jobs:
           go-version: stable
 
       - name: install go-mutesting
-        # A correction to an earlier claim in this repository's history: gremlins
-        # is NOT broken on Go 1.27. It reports "No results to report" when the
-        # target path is "./"-prefixed -- "./...", "./fs/", "." -- and every
-        # invocation tried here used that form. An unprefixed "fs" works.
+        # Two earlier claims in this repository's history were wrong, and this
+        # is the third and last statement on it.
         #
-        # go-mutesting is kept for a different reason: on the same packages it
-        # produces 17 mutants each where gremlins produces 2 and 3.
+        #   "gremlins is broken on Go 1.27"          -- no. It works elsewhere.
+        #   "gremlins fails on a ./-prefixed target" -- no. ./pkg/x/y/ works
+        #                                               elsewhere, same shape.
         #
-        # The lesson is about both tools. Each fails silently in at least one
-        # configuration, which is why scripts/mutation-selftest.sh exists.
+        # What is actually known: in THIS module, every gremlins invocation
+        # tried reported nothing, and unprefixed targets later worked. The
+        # variable was never isolated, so the cause is unknown.
+        #
+        # go-mutesting is kept on the one comparison that holds: on the same
+        # packages it produces 17 mutants each where gremlins produces 2 and 3.
+        #
+        # The durable lesson is about both tools. A mutation run that reports
+        # nothing looks exactly like a codebase with nothing to find, and
+        # neither tool distinguishes them. That is why the selftest exists.
         run: go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
 
       # The selftest runs first. A gate that cannot report a violation and a
