@@ -21,6 +21,20 @@
 // own. Matching an accepted shape is the cheapest form of forward
 // compatibility available.
 //
+// # A limit: the Op string is not portable
+//
+// An injected error carries an Op string chosen to match what the real os
+// package reports. That mapping holds on Linux and macOS. It does not hold on
+// Windows, where os reports the Win32 API it called: Stat gives
+// "GetFileAttributesEx" on one Go release and "CreateFile" on another, so there
+// is no value an adapter could hardcode that would be right on both.
+//
+// Everything else about the injected error is portable -- it is an
+// *os.PathError, or an *os.LinkError for Rename, wrapping a syscall.Errno, and
+// it names an Op and a Path. Code that switches on the Op string of a
+// filesystem error is not portable either way, and this package cannot make it
+// so.
+//
 // A caller that also imports io/fs must alias one of the two:
 //
 //	import (

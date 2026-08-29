@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/dd0wney/fault"
@@ -134,6 +135,19 @@ func TestInjectedOpStringsMatchTheRealOnes(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// The Op string is not portable, and CI found it rather than
+			// reasoning finding it. On Windows the real os package reports the
+			// Win32 API it called -- Stat gives "GetFileAttributesEx" on one Go
+			// release and "CreateFile" on another. The two Go versions in the
+			// matrix disagree with each other, so there is no value an adapter
+			// could hardcode that would be right.
+			//
+			// The shape assertions in fault_test.go are portable and stay in
+			// force everywhere. This one pins the mapping where it is stable.
+			if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+				t.Skipf("the Op string is platform-specific on %s", runtime.GOOS)
+			}
+
 			var realPath *os.PathError
 			if !errors.As(tc.real(), &realPath) {
 				t.Fatalf("the control produced no *os.PathError, so this compares nothing")
