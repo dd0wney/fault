@@ -112,7 +112,7 @@ package away.
 ## Development
 
 ```
-go test ./...                          # 79 tests
+go test ./...                          # 78 tests
 ./scripts/mutation-selftest.sh         # prove the mutation gate can fail
 ./scripts/mutation.sh                  # then run it
 ./scripts/no-external-deps.sh          # standard library only
