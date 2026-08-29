@@ -36,6 +36,9 @@ expect 2 "the suite already fails, so the score would lie" \
 expect 2 "a package that generates no mutants" \
   "$GATE" --root "$DATA/nomutants" --baseline "$DATA/nomutants/baseline.tsv"
 
+expect 2 "a package missing from the baseline" \
+  "$GATE" --root "$DATA/unlisted" --baseline "$DATA/unlisted/baseline.tsv"
+
 expect 1 "a package below its floor" \
   "$GATE" --root "$DATA/thin" --baseline "$DATA/thin/baseline.tsv"
 

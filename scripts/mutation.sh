@@ -66,6 +66,26 @@ if ! (cd "$ROOT" && go test -count=1 ./... >/dev/null 2>&1); then
   exit 2
 fi
 
+# Every package in the module must appear in the baseline. Without this, a new
+# package escapes the gate entirely and the gate still reports a pass: it
+# measured exactly what it was told to, and what it was told is now wrong.
+#
+# This is the "testing a target that resembles the gate's target is not testing
+# the gate" problem, in the form it takes here. The gate's target list is data,
+# and data drifts from the thing it describes.
+LISTED="$(sed 's/\t.*//' "$BASELINE" | grep -v '^#' | grep -v '^$' \
+  | sed 's|^\./||; s|/$||; s|^$|.|' | sort -u)"
+ACTUAL="$(cd "$ROOT" && go list -f '{{.Dir}}' ./... 2>/dev/null \
+  | sed "s|^$ROOT||; s|^/||; s|^$|.|" | sort -u)"
+MISSING="$(comm -13 <(printf '%s\n' "$LISTED") <(printf '%s\n' "$ACTUAL"))"
+if [ -n "$MISSING" ]; then
+  echo "mutation: these packages are in the module and not in the baseline:" >&2
+  printf '  %s\n' $MISSING >&2
+  echo "mutation: the gate would report a pass having measured nothing about" >&2
+  echo "mutation: them — refusing. Add a row, or say why the package is exempt." >&2
+  exit 2
+fi
+
 FAILED=0
 while IFS=$'\t' read -r pkg floor rest; do
   case "$pkg" in ''|'#'*) continue ;; esac

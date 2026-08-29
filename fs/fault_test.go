@@ -3,6 +3,7 @@ package fs_test
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 
@@ -308,5 +309,112 @@ func TestAFailedReadOrWriteMovesNoBytes(t *testing.T) {
 			t.Errorf("pass %d: failed Write reported %d bytes, want 0", n, got)
 		}
 		_ = f.Close()
+	}
+}
+
+// shapePredicates are the questions a store asks about a filesystem error
+// before it decides what to do. They are about the error's SHAPE, not about
+// which errno it carries, so a real failure and an injected one must answer
+// them identically even though the errno legitimately differs.
+//
+// This is contract rule 4 in the form that catches real defects: an injected
+// error must be indistinguishable from the real one to every predicate the code
+// under test applies to it. Not merely "an error occurred".
+//
+// The rule and this test shape came from the graphdb project, where breaking it
+// cost data. Its write-ahead log classified resource failures with
+// errors.As(err, &pathErr), and its fault driver returned a bare fmt.Errorf, so
+// an injected device error during recovery was read as a torn tail. Recovery
+// stopped early, the next append reused a log sequence number already on disk,
+// and the next recovery dropped the record. The fault-injection tests passed
+// the whole time, exercising the wrong branch.
+var shapePredicates = map[string]func(error) bool{
+	"is an *os.PathError": func(err error) bool {
+		var e *os.PathError
+		return errors.As(err, &e)
+	},
+	"wraps a syscall.Errno": func(err error) bool {
+		var e syscall.Errno
+		return errors.As(err, &e)
+	},
+	"names the operation": func(err error) bool {
+		var e *os.PathError
+		return errors.As(err, &e) && e.Op != ""
+	},
+	"names the path": func(err error) bool {
+		var e *os.PathError
+		return errors.As(err, &e) && e.Path != ""
+	},
+	"is not an *os.LinkError": func(err error) bool {
+		var e *os.LinkError
+		return !errors.As(err, &e)
+	},
+}
+
+// A real failure and an injected one must answer every shape predicate the same
+// way. The test needs no knowledge of what the right answer is, only that the
+// two agree, so it cannot encode the same misunderstanding twice.
+func TestAnInjectedErrorHasTheShapeOfARealOne(t *testing.T) {
+	// A real one: opening a file under a directory that does not exist.
+	realErr := func() error {
+		_, err := faultfs.OS().OpenFile(
+			filepath.Join(t.TempDir(), "no-such-directory", "f"), os.O_RDONLY, 0)
+		return err
+	}()
+	if realErr == nil {
+		t.Fatal("the control produced no error, so this test compares nothing")
+	}
+
+	// An injected one, from the same operation.
+	var injected error
+	for n, p := range fault.Sweep(t) {
+		_, err := faultfs.New(p, newStub()).OpenFile("x", os.O_RDWR, 0o600)
+		if n == 1 {
+			injected = err
+		}
+	}
+	if injected == nil {
+		t.Fatal("no error was injected, so this test compares nothing")
+	}
+
+	for name, pred := range shapePredicates {
+		if got, want := pred(injected), pred(realErr); got != want {
+			t.Errorf("%q: injected=%v real=%v\n  injected: %v\n  real:     %v",
+				name, got, want, injected, realErr)
+		}
+	}
+}
+
+// Rename is the exception, so its shape is compared against a real rename
+// failure rather than against an open.
+func TestAnInjectedRenameHasTheShapeOfARealOne(t *testing.T) {
+	dir := t.TempDir()
+	realErr := faultfs.OS().Rename(filepath.Join(dir, "nope"), filepath.Join(dir, "other"))
+	if realErr == nil {
+		t.Fatal("the control produced no error, so this test compares nothing")
+	}
+
+	var injected error
+	for n, p := range fault.Sweep(t) {
+		err := faultfs.New(p, newStub()).Rename("a", "b")
+		if n == 1 {
+			injected = err
+		}
+	}
+
+	var realLink, injLink *os.LinkError
+	if !errors.As(realErr, &realLink) {
+		t.Fatalf("the control is %T, not an *os.LinkError: %v", realErr, realErr)
+	}
+	if !errors.As(injected, &injLink) {
+		t.Errorf("injected is %T, want *os.LinkError like the real one: %v", injected, injected)
+		return
+	}
+	if injLink.Op != realLink.Op {
+		t.Errorf("injected Op = %q, real Op = %q", injLink.Op, realLink.Op)
+	}
+	if injLink.Old == "" || injLink.New == "" {
+		t.Errorf("injected LinkError names Old=%q New=%q; a real one names both",
+			injLink.Old, injLink.New)
 	}
 }
