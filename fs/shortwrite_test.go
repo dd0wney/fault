@@ -118,7 +118,23 @@ func TestAShortWriteReportsENOSPC(t *testing.T) {
 // comparing a write against a failed open would compare two different Ops.
 func TestAShortWriteHasTheShapeOfARealOne(t *testing.T) {
 	realErr := func() error {
-		f, err := os.OpenFile(filepath.Join(t.TempDir(), "f"), os.O_CREATE|os.O_RDONLY, 0o600)
+		// Create the file, then reopen it read-only. The two steps cannot be
+		// merged into one O_CREATE|O_RDONLY open, and the reason is not
+		// obvious: on Windows, syscall.Open adds GENERIC_WRITE to the access
+		// mask whenever O_CREAT is set, whatever the read/write mode asked
+		// for. The handle comes back writable, the control write succeeds, and
+		// the control stops being one.
+		//
+		//	if flag&O_CREAT != 0 { access |= GENERIC_WRITE }
+		//	-- GOROOT/src/syscall/syscall_windows.go
+		//
+		// Linux hid this, because there O_CREAT|O_RDONLY is genuinely
+		// read-only. Windows CI found it.
+		path := filepath.Join(t.TempDir(), "f")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatalf("preparing the control: %v", err)
+		}
+		f, err := os.Open(path) // O_RDONLY alone
 		if err != nil {
 			t.Fatalf("preparing the control: %v", err)
 		}
