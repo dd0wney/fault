@@ -92,12 +92,26 @@
 // the error. So measure both -- what the real operation returns, and what the
 // code under test interrogates it for.
 //
-// Rule 2 has one principled exception, and an adapter that takes it must say
-// so at the method. A failed close(2) still releases its descriptor, because
+// Rule 2 has two principled exceptions, and an adapter that takes one must say
+// so at the method.
+//
+// The first: a failed close(2) still releases its descriptor, because
 // POSIX guarantees it, so a Close that skips the release leaks one handle per
 // pass over a walk that may run hundreds of passes. The rule protects the
 // caller from observable effects of a failed operation; it does not stop the
 // operating system reclaiming its own.
+//
+// The second: an operation that fails partway leaves what it already did. A
+// real write can move some of its buffer and then fail, and an adapter that
+// models one must leave those bytes where a real write would. Here the effect
+// is not incidental to the fault -- it is the fault. A torn record on disk is
+// the state the caller has to survive, and an injection that tidied it away
+// would test nothing the whole failure does not already test. See
+// fs.NewShortWrite.
+//
+// Both exceptions meet the same test: the effect is one that a real failure of
+// that operation also leaves behind. An adapter may not invent an effect of its
+// own.
 //
 // An adapter returning another interface -- a filesystem returning an open
 // file -- must wrap what it returns and pass on the same [Points]. Both share
@@ -252,7 +266,12 @@
 // then reopened as though the process had died -- SQLite runs it as a third
 // loop, beside its out-of-memory and I/O-error loops. This package does not.
 //
-// A sweep also injects whole-operation failures only. A real write may write
-// fewer bytes than asked and report no error at all, and a store that ignores
-// the returned count is invisible here.
+// A sweep injects one shape of short write and not the other.
+//
+// fs.NewShortWrite moves part of a buffer and reports ENOSPC, which is what a
+// full disk does to a real write. What stays out of reach is a short write
+// carrying no error. os.File never produces that pair: it synthesises
+// io.ErrShortWrite whenever the count falls short and the syscall itself
+// reported nothing. Another fs.File implementation can produce it, and a caller
+// that checks the error and ignores the count is invisible here.
 package fault

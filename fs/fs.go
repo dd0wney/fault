@@ -50,8 +50,8 @@
 //
 //	go doc github.com/dd0wney/fault
 //
-// This package takes the one principled exception to rule 2, at Close, and
-// says why at that method.
+// This package takes both principled exceptions to rule 2 -- at Close, and at
+// a short Write -- and says why at each method.
 //
 // Every Op string here was measured by making the real os package fail and
 // reading what it reported. Do not change one from memory.

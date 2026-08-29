@@ -89,8 +89,13 @@ durability — a store that writes straight to its destination file is unsafe, a
 a sweep will not say so, because its cleanup deletes the partial file. SQLite
 runs a third loop for this. This library does not.
 
-**Whole operations only.** A real write may write fewer bytes than asked and
-report no error. A store that ignores the returned count is invisible here.
+**Short writes, but only the shape a real file produces.** `fs.NewShortWrite`
+moves part of a buffer and reports ENOSPC, the way a full disk does, so a torn
+record on disk is reachable. A short write carrying **no** error is not:
+`os.File` never returns that pair, because it synthesises `io.ErrShortWrite`
+whenever the count falls short and the syscall reported nothing. Another
+`fs.File` implementation can, and a caller that checks the error and ignores the
+count is invisible here.
 
 **One goroutine, in the core.** Under concurrency the N-th operation overall is
 a different operation on every run. A sweep over that visits an arbitrary subset

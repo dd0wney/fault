@@ -11,6 +11,10 @@ type faultFS struct {
 	p    *fault.Points
 	base FS
 	err  error // the errno every injected failure reports
+	// shortWrite selects what a tripped Write does. False fails the whole
+	// operation and moves no bytes. True writes part of the buffer for real
+	// and reports ENOSPC.
+	shortWrite bool
 }
 
 // New returns an FS that fails one operation, chosen by p, with syscall.EIO.
@@ -23,6 +27,29 @@ type faultFS struct {
 // a fault: a correct store responds to those by succeeding at what it was
 // trying to do, so injecting one tests a different path than the one intended.
 func New(p *fault.Points, base FS) FS { return &faultFS{p: p, base: base, err: syscall.EIO} }
+
+// NewShortWrite returns an FS whose failing write is a SHORT write: it moves
+// the first half of the buffer for real, then reports ENOSPC.
+//
+// Half is contract, not an accident. A sweep is a regression test, so a caller
+// records a failing pass and runs it again, and a count that drifted between
+// releases would move that record with it.
+//
+// It changes Write and nothing else. Every other operation fails exactly as it
+// does under [New], with EIO, so this is a short write and not a full disk.
+//
+// The two constructors find different defects, so a thorough sweep runs both.
+// [New] finds a caller that mishandles a failed write. This finds a caller that
+// assumes a failed write moved no bytes, or that ignores the returned count --
+// the bug class the package documentation lists as out of reach.
+//
+// This is the second deliberate exception to contract rule 2, after Close, and
+// it is an exception for a different reason. Close leaves an effect because
+// POSIX forces it. A short write leaves an effect because the effect is the
+// point: the torn record on disk is the state the caller must survive.
+func NewShortWrite(p *fault.Points, base FS) FS {
+	return &faultFS{p: p, base: base, err: syscall.EIO, shortWrite: true}
+}
 
 // OpenFile is the only method that returns another interface, and so the only
 // place the injection can leak. The file it hands back must be wrapped, or the
@@ -45,7 +72,7 @@ func (f *faultFS) OpenFile(name string, flag int, perm os.FileMode) (File, error
 	// The same Points, deliberately. The file's operations continue the
 	// sequence the filesystem started, so an open, a write, a sync and a close
 	// are operations 1 to 4 of one scenario rather than two separate counts.
-	return &faultFile{p: f.p, base: file, err: f.err, name: name}, nil
+	return &faultFile{p: f.p, base: file, err: f.err, name: name, shortWrite: f.shortWrite}, nil
 }
 
 func (f *faultFS) Remove(name string) error {
@@ -113,6 +140,9 @@ type faultFile struct {
 	// A faultFile without it cannot build a truthful *os.PathError: every
 	// os.File method reports the file's own name as Path.
 	name string
+	// shortWrite is carried down from the faultFS that opened this file, so
+	// the file's write behaves the way the constructor promised.
+	shortWrite bool
 }
 
 func (f *faultFile) Read(b []byte) (int, error) {
@@ -122,11 +152,45 @@ func (f *faultFile) Read(b []byte) (int, error) {
 	return f.base.Read(b)
 }
 
+// Write fails in one of two ways, chosen by the constructor.
+//
+// Under New it fails whole: no bytes move, and it reports EIO. Under
+// NewShortWrite it moves part of the buffer for real and reports ENOSPC. That
+// second form is the exception to contract rule 2, and the effect it leaves
+// behind is the whole point of it -- a torn record on disk is the state a
+// caller has to survive, and no other injection in this package produces one.
+//
+// Trip is called once either way, before the operation, so a scenario trips at
+// the same point under both constructors and the two sweeps stay comparable.
 func (f *faultFile) Write(b []byte) (int, error) {
-	if f.p.Trip() {
+	if !f.p.Trip() {
+		return f.base.Write(b)
+	}
+	if !f.shortWrite {
 		return 0, f.fail("write")
 	}
-	return f.base.Write(b)
+
+	// Half the buffer. A torn record is what a caller must survive, and half
+	// is the most representative shape of one: a record whose header says N
+	// bytes and whose body holds fewer.
+	//
+	// The count is a function of the buffer alone. That is what keeps a sweep
+	// reproducible -- a count drawn from a clock or a random source would make
+	// a failing pass impossible to run again, which is the one thing a
+	// regression test needs from it.
+	//
+	// A one-byte buffer halves to zero, so a short write of one byte moves
+	// nothing. That is truthful, because a full disk really does write zero
+	// bytes, and it means the short and whole forms converge at small sizes.
+	n, baseErr := f.base.Write(b[:len(b)/2])
+	if baseErr != nil {
+		// The world said no partway through, and its answer outranks the one
+		// this package chose. Both halves of it matter. Reporting ENOSPC here
+		// would send a caller to free space on a disk that was never full, and
+		// reporting the injected count would claim bytes that never landed.
+		return n, baseErr
+	}
+	return n, f.failWith("write", syscall.ENOSPC)
 }
 
 func (f *faultFile) Sync() error {
@@ -171,6 +235,16 @@ func (f *faultFile) Close() error {
 	return closeErr
 }
 
-func (f *faultFile) fail(op string) error {
-	return &os.PathError{Op: op, Path: f.name, Err: f.err}
+func (f *faultFile) fail(op string) error { return f.failWith(op, f.err) }
+
+// failWith is fail with the errno named at the call site, and it exists for the
+// one operation whose errno is not f.err.
+//
+// A short write reports ENOSPC, because a full disk is what makes a real write
+// short. Contract rule 4 is why that distinction is kept: a store that responds
+// to ENOSPC by freeing space and retrying takes a branch it can never take on
+// EIO, and an adapter that reported EIO here would leave that branch untested
+// while appearing to cover the write.
+func (f *faultFile) failWith(op string, err error) error {
+	return &os.PathError{Op: op, Path: f.name, Err: err}
 }
