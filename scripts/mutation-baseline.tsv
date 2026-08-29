@@ -6,3 +6,9 @@
 ./fs/	1.00	No survivors.
 ./alloc/	1.00	No survivors. One mutant is reported as duplicated.
 ./role/	0.74	Survivors are the mutex (only -race sees it, and go-mutesting does not run with it), the armed==0 guard on a Points no exported call can construct, and message-text variants the assertions do not pin.
+#
+# NOT COVERED HERE: the tools module. It is a separate module, so `go list
+# ./...` from this root does not see it and the completeness check above
+# cannot enforce a row for it. Its score is 0.39, which is weak, and the
+# honest position is that the mutation gate covers the library and not the
+# tooling. Fixing that means a second gate with its own baseline.

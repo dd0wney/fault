@@ -116,7 +116,21 @@ jobs:
         working-directory: tools
         run: |
           skipped="$(go test -v ./... 2>&1 | grep -c '^ *--- SKIP' || true)"
-          echo "tools: $skipped test(s) skipped because a function is not written yet"
+          echo "tools: $skipped test(s) skipped"
+
+      # The coupling gate, run against this module's own registry. Statement
+      # and branch coverage measure what happened INSIDE a component; this
+      # measures the interfaces between them, which is DO-178C objective
+      # 6.4.4.d and the thing nine of graphdb's thirteen defects were.
+      #
+      # There is no threshold. A floor set before the number is understood is
+      # how a coverage gate gets set wrong. Exit 1 means a declared interface
+      # was never exercised at all; exit 2 means the measure could not run.
+      - name: coupling coverage
+        run: |
+          go test -coverprofile=coverage.out ./... > /dev/null
+          go -C tools build -o "$RUNNER_TEMP/coupling" ./coupling
+          "$RUNNER_TEMP/coupling" -root . -registry docs/couplings.tsv -profile coverage.out
 
   mutation:
     name: mutation testing

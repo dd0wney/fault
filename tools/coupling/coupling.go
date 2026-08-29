@@ -51,16 +51,6 @@ import (
 	"strings"
 )
 
-// errNotWritten marks a function that has not been implemented yet, so its
-// tests can skip rather than fail. A test that fails because its PRECONDITION
-// is missing says nothing about itself, and a wall of red hides which failures
-// are real.
-//
-// Delete this the moment the last stub goes. It exists to keep CI honest during
-// implementation, and a sentinel that outlives that purpose starts hiding
-// exactly what it was meant to reveal.
-var errNotWritten = fmt.Errorf("not written yet")
-
 // Coupling is one row of the registry: an interface a human declared.
 type Coupling struct {
 	ID      string // stable identifier, referenced by the architecture document

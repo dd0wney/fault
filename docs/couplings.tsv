@@ -1,0 +1,11 @@
+# The interfaces between this module's components, in the form scripts/dccc.sh
+# and `go tool coupling` measure: statement coverage restricted to the
+# statements that cross a boundary.
+#
+# id	kind	package	symbol	lines	note
+C1	control	github.com/dd0wney/fault	Points.Trip		Every adapter crosses this. The core decides which operation fails; the adapter decides what failing means.
+C2	control	github.com/dd0wney/fault	walk		The sweep's own control flow: it decides whether the caller gets another pass.
+C3	control	github.com/dd0wney/fault/fs	faultFS.OpenFile		The one adapter method returning another interface, so the only place injection can leak.
+C4	data	github.com/dd0wney/fault/fs	faultFS.fail		The error an adapter hands back, which the code under test applies predicates to.
+C5	data	github.com/dd0wney/fault/alloc	Fault.Bytes		The allocator boundary, and the outstanding count that crosses it.
+C6	control	github.com/dd0wney/fault/role	Points.Op		The per-actor boundary: which role an operation belongs to is the adapter's judgement.

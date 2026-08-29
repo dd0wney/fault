@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"io"
 	"os"
 	"strings"
@@ -60,9 +59,6 @@ func TestResolveLocatesEachSymbol(t *testing.T) {
 		{ID: "C1", Kind: "control", Package: "fixture", Symbol: "Load"},
 		{ID: "C2", Kind: "data", Package: "fixture", Symbol: "Save"},
 	})
-	if errors.Is(err, errNotWritten) {
-		t.Skip("resolve is not written yet")
-	}
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -90,9 +86,6 @@ func TestResolveFindsAMethod(t *testing.T) {
 	sites, err := resolve("testdata", []Coupling{
 		{ID: "C2", Kind: "data", Package: "fixture", Symbol: "Save"},
 	})
-	if errors.Is(err, errNotWritten) {
-		t.Skip("resolve is not written yet")
-	}
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -107,9 +100,6 @@ func TestResolveRefusesAnUnknownSymbol(t *testing.T) {
 	_, err := resolve("testdata", []Coupling{
 		{ID: "C9", Kind: "control", Package: "fixture", Symbol: "Vanished"},
 	})
-	if errors.Is(err, errNotWritten) {
-		t.Skip("resolve is not written yet")
-	}
 	if err == nil {
 		t.Fatal("resolve accepted a symbol nothing declares, want an error")
 	}
@@ -122,9 +112,6 @@ func TestResolveNarrowsToALineRange(t *testing.T) {
 	sites, err := resolve("testdata", []Coupling{
 		{ID: "C1", Kind: "control", Package: "fixture", Symbol: "Load", Lines: "9-11"},
 	})
-	if errors.Is(err, errNotWritten) {
-		t.Skip("resolve is not written yet")
-	}
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -141,9 +128,6 @@ func mustResolve(t *testing.T) []Site {
 		{ID: "C1", Kind: "control", Package: "fixture", Symbol: "Load"},
 		{ID: "C2", Kind: "data", Package: "fixture", Symbol: "Save"},
 	})
-	if errors.Is(err, errNotWritten) {
-		t.Skip("resolve is not written yet")
-	}
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -159,9 +143,6 @@ func TestMeasureAttributesStatements(t *testing.T) {
 	defer f.Close()
 
 	got, err := measure(f, sites)
-	if errors.Is(err, errNotWritten) {
-		t.Skip("measure is not written yet")
-	}
 	if err != nil {
 		t.Fatalf("measure: %v", err)
 	}
@@ -189,9 +170,6 @@ func TestMeasureRefusesAProfileThatMatchesNothing(t *testing.T) {
 	defer f.Close()
 
 	_, err = measure(f, sites)
-	if errors.Is(err, errNotWritten) {
-		t.Skip("measure is not written yet")
-	}
 	if err == nil {
 		t.Error("measure accepted a profile covering a different package, want an error")
 	}
@@ -207,9 +185,6 @@ func TestMeasureRefusesAnUnreadableProfile(t *testing.T) {
 			}
 			defer f.Close()
 			_, err = measure(f, sites)
-			if errors.Is(err, errNotWritten) {
-				t.Skip("measure is not written yet")
-			}
 			if err == nil {
 				t.Error("measure accepted it, want an error")
 			}
@@ -232,13 +207,6 @@ func TestExitCodes(t *testing.T) {
 		{"no registry at all", "testdata/nope.tsv", "testdata/profile-mixed.out", exitCannotRun},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// Reaching exit 0 or 1 needs a real measurement. The refusal cases
-			// below do not, and they are gated already.
-			if tc.want != exitCannotRun {
-				if _, err := resolve("testdata", nil); errors.Is(err, errNotWritten) {
-					t.Skip("resolve is not written yet")
-				}
-			}
 			if got := run("testdata", tc.registry, tc.profile, "text", io.Discard, io.Discard); got != tc.want {
 				t.Errorf("exit %d, want %d", got, tc.want)
 			}
