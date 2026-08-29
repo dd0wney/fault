@@ -93,3 +93,26 @@ jobs:
         run: |
           skipped="$(go test -v ./... 2>&1 | grep -c '^ *--- SKIP' || true)"
           echo "tools: $skipped test(s) skipped because a function is not written yet"
+
+  mutation:
+    name: mutation testing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: install go-mutesting
+        # gremlins reports "No results to report" on Go 1.27 -- both its dev
+        # build and its pinned v0.6.0 release -- verified against a fixture with
+        # obvious surviving mutants. This fork works.
+        run: go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
+
+      # The selftest runs first. A gate that cannot report a violation and a
+      # gate with nothing to report print the same thing.
+      - name: the mutation gate can report a violation
+        run: ./scripts/mutation-selftest.sh
+
+      - name: mutation score against the recorded floors
+        run: ./scripts/mutation.sh

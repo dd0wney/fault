@@ -2,6 +2,8 @@ package fault_test
 
 import (
 	"errors"
+	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -146,41 +148,127 @@ func TestWalkReportsNothingWhenTheCallerStops(t *testing.T) {
 	}
 }
 
-// --- Metamorphic properties (spec section 13.4) ---
+// --- The model (spec section 13.4) ---
 //
-// These catch the failure mode the example tests cannot: a walk that stops one
-// pass early still passes every example test above.
-func TestWalkVisitsEachOperationExactlyOnce(t *testing.T) {
-	for ops := 1; ops <= 8; ops++ {
+// Everything walk does is a function of one number: how many operations the
+// scenario performs. The model is two sentences, and the tests below check the
+// implementation against it rather than against hand-written examples.
+//
+//	A scenario performing K operations yields exactly K+1 passes.
+//	The operations that fail are exactly 1, 2, ... K, in order.
+//
+// These catch the failure the example tests cannot. A walk that drops its final
+// pass satisfies every example above: it returns the right errors, it stops on
+// break, and it refuses an empty scenario.
+
+// model returns what walk must produce for a scenario of k operations.
+func model(k int) (passes int, failed []int) {
+	passes = k + 1
+	failed = make([]int, k)
+	for i := range failed {
+		failed[i] = i + 1
+	}
+	return passes, failed
+}
+
+func TestWalkMatchesTheModel(t *testing.T) {
+	for k := 1; k <= 64; k++ {
 		var passes int
-		var tripped []int
+		var failed []int
 
 		err := fault.Walk(func(n int, p *fault.Points) bool {
 			passes++
-			for op := 1; op <= ops; op++ {
+			for op := 1; op <= k; op++ {
 				if p.Trip() {
-					tripped = append(tripped, op)
+					failed = append(failed, op)
 					break // a real adapter returns an error here
 				}
 			}
 			return true
 		})
 		if err != nil {
-			t.Fatalf("ops=%d: %v", ops, err)
+			t.Fatalf("k=%d: %v", k, err)
 		}
 
-		// One pass fails each operation in turn, plus the pass that proves the
-		// sequence ended.
-		if passes != ops+1 {
-			t.Errorf("ops=%d: %d passes, want %d", ops, passes, ops+1)
+		wantPasses, wantFailed := model(k)
+		if passes != wantPasses {
+			t.Errorf("k=%d: %d passes, want %d", k, passes, wantPasses)
+		}
+		if !slices.Equal(failed, wantFailed) {
+			t.Errorf("k=%d: failed operations %v, want %v", k, failed, wantFailed)
+		}
+	}
+}
+
+// Cleanup after a fault performs operations of its own, so the number of
+// operations per pass is no longer constant. The model still holds, and the
+// reason is worth stating: the pass that proves the sequence ended is the one
+// where nothing fires, so no cleanup runs on it either.
+//
+// This is the shape of every real scenario -- close the file, remove the
+// temporary, release the buffer -- and it is the case an exhaustive sweep
+// exists to reach.
+func TestCleanupOperationsDoNotChangeTheModel(t *testing.T) {
+	for _, tc := range []struct{ base, cleanup int }{
+		{1, 1}, {3, 2}, {8, 4}, {16, 1},
+	} {
+		var passes int
+		var failed []int
+
+		err := fault.Walk(func(n int, p *fault.Points) bool {
+			passes++
+			for op := 1; op <= tc.base; op++ {
+				if p.Trip() {
+					failed = append(failed, op)
+					// The cleanup path, which performs operations of its own.
+					for range tc.cleanup {
+						p.Trip()
+					}
+					break
+				}
+			}
+			return true
+		})
+		if err != nil {
+			t.Fatalf("base=%d cleanup=%d: %v", tc.base, tc.cleanup, err)
 		}
 
-		want := make([]int, ops)
-		for i := range want {
-			want[i] = i + 1
+		wantPasses, wantFailed := model(tc.base)
+		if passes != wantPasses {
+			t.Errorf("base=%d cleanup=%d: %d passes, want %d",
+				tc.base, tc.cleanup, passes, wantPasses)
 		}
-		if !slices.Equal(tripped, want) {
-			t.Errorf("ops=%d: failed operations %v, want %v", ops, tripped, want)
+		if !slices.Equal(failed, wantFailed) {
+			t.Errorf("base=%d cleanup=%d: failed %v, want %v",
+				tc.base, tc.cleanup, failed, wantFailed)
 		}
+	}
+}
+
+// Sweep must fail the test when walk returns a diagnostic. That one line is the
+// whole cost of the seam in sweep.go: walk is testable because it returns an
+// error, and the line that turns the error into a failure is not.
+//
+// A test cannot contain a failing subtest and still pass, so this re-executes
+// the test binary and asserts the child failed -- the pattern the standard
+// library uses in os/exec's own tests. Deleting the t.Fatal in Sweep passes
+// every other test in this package.
+func TestSweepFailsTheTestWhenTheWalkProvesNothing(t *testing.T) {
+	if os.Getenv("FAULT_SWEEP_CHILD") == "1" {
+		// The child. A scenario that performs no operations must fail here.
+		for range fault.Sweep(t) {
+		}
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.v")
+	cmd.Env = append(os.Environ(), "FAULT_SWEEP_CHILD=1")
+	out, err := cmd.CombinedOutput()
+
+	if err == nil {
+		t.Errorf("the child test passed: Sweep did not fail a walk that proved nothing\n%s", out)
+	}
+	if !strings.Contains(string(out), "proved nothing") {
+		t.Errorf("the child failed without the diagnostic:\n%s", out)
 	}
 }

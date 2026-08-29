@@ -184,3 +184,57 @@ func TestAnUnmatchedFreeDrivesTheCountNegative(t *testing.T) {
 		}
 	}
 }
+
+// failingAlloc is a base that refuses on its own.
+type failingAlloc struct{ err error }
+
+func (f failingAlloc) Bytes(int) ([]byte, error) { return nil, f.err }
+func (f failingAlloc) Free([]byte)               {}
+
+// A real refusal from the base is not a fault this package chose, and it must
+// reach the code under test unchanged.
+func TestARealErrorFromTheBasePassesThrough(t *testing.T) {
+	want := errors.New("the pool is empty")
+	for n, p := range fault.Sweep(t) {
+		a := faultalloc.New(p, failingAlloc{err: want})
+		_, err := a.Bytes(8)
+		if n == 1 {
+			continue // pass 1 refuses before reaching the base
+		}
+		if !errors.Is(err, want) {
+			t.Errorf("pass %d: err = %v, want the base's own error", n, err)
+		}
+	}
+}
+
+// NewAllFrom must refuse from its ARMED point, not from the first allocation.
+// Recording the refusal without checking that Trip fired makes every allFrom
+// adapter refuse everything, and the pass-1 tests above cannot see it because
+// on pass 1 the first allocation is the armed one.
+func TestAllFromRefusesNothingBeforeItsArmedPoint(t *testing.T) {
+	// Every pass must perform the allocations, or the sweep sees a scenario
+	// that did nothing and refuses. Only the assertions are conditional.
+	for n, p := range fault.Sweep(t) {
+		a := faultalloc.NewAllFrom(p, faultalloc.Go())
+
+		var errs [4]error
+		for i := range errs {
+			_, errs[i] = a.Bytes(8)
+		}
+		if n != 3 {
+			continue // the armed point is the third allocation
+		}
+
+		for i := 0; i < 2; i++ {
+			if errs[i] != nil {
+				t.Errorf("allocation %d: err = %v, want nil: the armed point is 3", i+1, errs[i])
+			}
+		}
+		if !errors.Is(errs[2], faultalloc.ErrNoMemory) {
+			t.Errorf("allocation 3: err = %v, want ErrNoMemory", errs[2])
+		}
+		if !errors.Is(errs[3], faultalloc.ErrNoMemory) {
+			t.Errorf("allocation 4: err = %v, want ErrNoMemory: every one after the refusal", errs[3])
+		}
+	}
+}

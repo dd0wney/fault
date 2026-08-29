@@ -212,3 +212,101 @@ func TestAFailedCloseStillReleasesTheHandle(t *testing.T) {
 		t.Errorf("the real Close ran %d times, want 2: a failed Close still releases the handle", got)
 	}
 }
+
+// failingFS is a base whose operations fail on their own. A sweep injects
+// faults; the world produces its own, and they must reach the code under test
+// untouched.
+type failingFS struct{ err error }
+
+func (f failingFS) OpenFile(string, int, os.FileMode) (faultfs.File, error) {
+	return nil, f.err
+}
+func (f failingFS) Remove(string) error                   { return f.err }
+func (f failingFS) Rename(string, string) error           { return f.err }
+func (f failingFS) Stat(string) (os.FileInfo, error)      { return nil, f.err }
+func (f failingFS) MkdirAll(string, os.FileMode) error    { return f.err }
+func (f failingFS) ReadDir(string) ([]os.DirEntry, error) { return nil, f.err }
+
+// A real error from the base is not a fault this package chose. It passes
+// through unchanged, or the code under test is handed a lie about what the
+// filesystem said.
+func TestARealErrorFromTheBasePassesThrough(t *testing.T) {
+	want := errors.New("the disk is on fire")
+	base := failingFS{err: want}
+
+	for n, p := range fault.Sweep(t) {
+		fsys := faultfs.New(p, base)
+		if n == 1 {
+			// Pass 1 fails the open itself, so the base is never reached.
+			_, _ = fsys.OpenFile("x", os.O_RDWR, 0o600)
+			continue
+		}
+		_, err := fsys.OpenFile("x", os.O_RDWR, 0o600)
+		if !errors.Is(err, want) {
+			t.Errorf("pass %d: err = %v, want the base's own error", n, err)
+		}
+	}
+}
+
+// Counting passes proves Trip is called. It does not prove the method returns
+// the injected error -- a method that calls Trip and ignores the answer keeps
+// the pass count exactly right.
+func TestEveryFileMethodReturnsTheInjectedError(t *testing.T) {
+	type op struct {
+		name string
+		call func(faultfs.File) error
+	}
+	ops := []op{
+		{"Read", func(f faultfs.File) error { _, err := f.Read(make([]byte, 4)); return err }},
+		{"Write", func(f faultfs.File) error { _, err := f.Write([]byte("x")); return err }},
+		{"Sync", faultfs.File.Sync},
+		{"Truncate", func(f faultfs.File) error { return f.Truncate(0) }},
+		{"Close", faultfs.File.Close},
+	}
+
+	for i, o := range ops {
+		t.Run(o.name, func(t *testing.T) {
+			// Pass 1 fails the open, so arm the pass that reaches this method:
+			// the open is operation 1, and the methods follow in order.
+			want := i + 2
+			var got error
+			for n, p := range fault.Sweep(t) {
+				f, openErr := faultfs.New(p, newStub()).OpenFile("x", os.O_RDWR, 0o600)
+				if openErr != nil {
+					continue
+				}
+				for j, each := range ops {
+					err := each.call(f)
+					if n == want && j == i {
+						got = err
+					}
+					if err != nil {
+						break
+					}
+				}
+			}
+			var errno syscall.Errno
+			if !errors.As(got, &errno) {
+				t.Errorf("%s returned %v, want an error wrapping a syscall.Errno", o.name, got)
+			}
+		})
+	}
+}
+
+// io.Reader and io.Writer callers act on n before they look at the error, so a
+// failed Read or Write must report that it moved no bytes.
+func TestAFailedReadOrWriteMovesNoBytes(t *testing.T) {
+	for n, p := range fault.Sweep(t) {
+		f, openErr := faultfs.New(p, newStub()).OpenFile("x", os.O_RDWR, 0o600)
+		if openErr != nil {
+			continue
+		}
+		if got, err := f.Read(make([]byte, 4)); err != nil && got != 0 {
+			t.Errorf("pass %d: failed Read reported %d bytes, want 0", n, got)
+		}
+		if got, err := f.Write([]byte("hello")); err != nil && got != 0 {
+			t.Errorf("pass %d: failed Write reported %d bytes, want 0", n, got)
+		}
+		_ = f.Close()
+	}
+}

@@ -1,0 +1,7 @@
+# package	floor	why this floor and not 1.0
+#
+# The floor is recorded from a measured run, never chosen in advance. A floor
+# set before the number is understood is how a coverage gate gets set wrong.
+./	0.77	Four survivors, all equivalent in effect: maxOps 511/512/513 and > vs >= on an arbitrary bound, and a removed t.Helper, which changes only which line a failure points at.
+./fs/	1.00	No survivors.
+./alloc/	1.00	No survivors. One mutant is reported as duplicated.
