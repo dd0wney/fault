@@ -184,3 +184,59 @@ jobs:
 
       - name: mutation score against the recorded floors
         run: ./scripts/mutation.sh
+
+  # golangci-lint cannot run on this machine as of this commit. The local
+  # binary is v2.12.2, built with go1.26.3, and the local `go` is 1.27.0. It
+  # stops with a typecheck error in the standard library before it reads a
+  # single file of this repository:
+  #
+  #   internal/poll/splice_linux.go:237:21: unknown field rfd in struct
+  #   literal of type splicePipe (typecheck)
+  #
+  # The action below downloads its own pinned golangci-lint release and runs
+  # it against the Go toolchain this job selects, so the failure above is a
+  # property of this machine, not of the gate. A person who runs the linter
+  # here and sees this failure must read this comment, not assume the gate
+  # is broken.
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      # The selftest runs first, on purpose, matching every other gate in
+      # this file: a gate that cannot report a violation and a gate with
+      # nothing to report print the same thing. scripts/testdata/lintfixture
+      # is a separate Go module, so it stays out of go build/vet/list for
+      # the library, and it holds one deliberate violation: an unchecked
+      # error return, which errcheck (in the default linter set) must
+      # reject.
+      - name: the lint gate can report a violation
+        id: lintfixture
+        continue-on-error: true
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.13.2
+          working-directory: scripts/testdata/lintfixture
+
+      # continue-on-error above turns a lint failure into a green step with
+      # outcome "failure", so the result has to be asserted here rather than
+      # assumed from the step's own color.
+      - name: assert the lint selftest actually failed
+        env:
+          OUTCOME: ${{ steps.lintfixture.outcome }}
+        run: |
+          outcome="$OUTCOME"
+          if [ "$outcome" != "failure" ]; then
+            echo "lint selftest: expected the fixture to fail, got outcome '$outcome'" >&2
+            exit 1
+          fi
+          echo "lint selftest: the fixture's violation was correctly rejected"
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.13.2
