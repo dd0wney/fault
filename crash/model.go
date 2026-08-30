@@ -1,4 +1,3 @@
-// Package crash rebuilds a store's on-disk state as a crash would leave it.
 package crash
 
 // Cover chooses which candidate states a sweep visits.

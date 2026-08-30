@@ -10,3 +10,4 @@ C4	data	github.com/dd0wney/fault/fs	faultFS.fail		The error an adapter hands bac
 C5	data	github.com/dd0wney/fault/alloc	Fault.Bytes		The allocator boundary, and the outstanding count that crosses it.
 C6	control	github.com/dd0wney/fault/role	Points.Op		The per-actor boundary: which role an operation belongs to is the adapter's judgement.
 C7	data	github.com/dd0wney/fault/fs	faultFile.Write		The byte count an adapter hands back with a partial failure. C4 covers the error; a caller acts on the count first, and under a short write it is neither 0 nor the whole buffer.
+C8	control	github.com/dd0wney/fault/crash	Run		Run serves the check through this package's own fs.FS, and Recorder records through another. Both track that method set by hand, so a seek or a positional write added to fault/fs as an optional interface leaves every recorded offset wrong while the record stays internally consistent, and nothing here fails to build.

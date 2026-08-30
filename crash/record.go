@@ -13,8 +13,12 @@ import (
 // tail would build states no crash can produce, and the sweep would still
 // pass, so passing the bound fails the test instead.
 //
-// The value is provisional. Task 15 replaces it with a number measured from
-// the four reference stores.
+// MEASURED 2026-08-30: each of the four reference stores records 8 bytes for
+// the two-save scenario, under Model{Sector: 4096}. That number says the bound
+// is nowhere near the traffic of the scenarios this package is written for, so
+// it is set for the record that runs away rather than for the ones measured.
+// 64 MiB is where a record stops being a test fixture: the recorder holds every
+// byte a scenario wrote, in memory, for the whole walk.
 const maxBytes = 64 << 20
 
 type kind int

@@ -78,6 +78,7 @@ few of them.
 | `fault/fs` | Filesystem adapter. Wraps a real filesystem rather than replacing it, so everything not failed is served for real. |
 | `fault/alloc` | Allocator adapter, with both of SQLite's out-of-memory loops and an outstanding-allocation count. |
 | `fault/role` | Per-actor sweeps for concurrent scenarios, with the stability check that makes them sound. |
+| `fault/crash` | Rebuilds the on-disk state a power cut could leave, then runs a check on every one of them. SQLite's third loop. |
 | `fault/tools` | Build-time gates. A separate module, and not part of the library. |
 
 Adapters need `Points` and `Trip` and nothing else, so anyone can write one in
@@ -87,11 +88,13 @@ their own module. Run `go doc github.com/dd0wney/fault` for the contract.
 
 Stated plainly, because the failure mode of a testing library is a false green.
 
-**Errors, not crashes.** An error return is a cooperative failure: the caller is
-told and gets to unwind. A crash is not. So a clean sweep does **not** verify
-durability — a store that writes straight to its destination file is unsafe, and
-a sweep will not say so, because its cleanup deletes the partial file. SQLite
-runs a third loop for this. This library does not.
+**Errors, not crashes, in the core.** An error return is a cooperative failure:
+the caller is told and gets to unwind. A crash is not. So a clean sweep does
+**not** verify durability — a store that writes straight to its destination file
+is unsafe, and a sweep will not say so, because its cleanup deletes the partial
+file. SQLite runs a third loop for this, and `fault/crash` is that loop. It
+rebuilds the state each crash point could leave and runs your check on every
+one. Read its limits before you trust it: `go doc github.com/dd0wney/fault/crash`.
 
 **Short writes, but only the shape a real file produces.** `fs.NewShortWrite`
 moves part of a buffer and reports ENOSPC, the way a full disk does, so a torn
@@ -121,7 +124,7 @@ package away.
 ## Development
 
 ```
-go test ./...                          # 78 tests
+go test ./...                          # 198 tests
 ./scripts/mutation-selftest.sh         # prove the mutation gate can fail
 ./scripts/mutation.sh                  # then run it
 ./scripts/no-external-deps.sh          # standard library only

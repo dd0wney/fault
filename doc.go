@@ -265,6 +265,8 @@
 // Reaching that class of defect needs the state captured at each operation and
 // then reopened as though the process had died -- SQLite runs it as a third
 // loop, beside its out-of-memory and I/O-error loops. This package does not.
+// [github.com/dd0wney/fault/crash] is that third loop, and it carries its own
+// limits, which are worth reading before a clean run there is trusted.
 //
 // A sweep injects one shape of short write and not the other.
 //

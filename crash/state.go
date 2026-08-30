@@ -184,8 +184,13 @@ func closure(entries []entry, keep map[int]bool) map[int]bool {
 	return out
 }
 
-// maxStates bounds one crash point's exhaustive walk. It is provisional;
-// Task 15 replaces it with a number measured from the reference stores.
+// maxStates bounds one crash point's exhaustive walk.
+//
+// MEASURED 2026-08-30: over the four reference stores under Model{Sector: 4096}
+// and both metadata rulings, the largest pending-unit count at any crash point
+// is 4, which is 16 states. noFileSync and noDirSync under the POSIX rule both
+// reach it. 4096 is 256 times that, and it admits 12 pending units where the
+// measurement needed 4.
 const maxStates = 4096
 
 var errTooManyStates = errors.New("crash: too many states for an exhaustive cover")
