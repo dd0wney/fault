@@ -522,6 +522,99 @@ func TestMkdirAllRecordsOneEntryPerLevelItCreates(t *testing.T) {
 	}
 }
 
+// A handle opened with O_APPEND writes at the current end of the file, so the
+// recorder must start its offset there. Starting at zero recorded every append
+// on top of the bytes already in the file, and the positive control caught it
+// as "contents differ: wal (want 8 bytes, got 4 bytes)".
+func TestOAppendStartsAtTheEndOfTheFile(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "wal")
+	if err := os.WriteFile(name, []byte("0123"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := crash.Record(faultfs.OS(), dir)
+	f, err := rec.OpenFile(name, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("4567")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	w := findEntry(t, crash.Entries(rec), "write")
+	if w.Off != 4 {
+		t.Errorf("the append was recorded at offset %d, want 4 — the size the file already held", w.Off)
+	}
+	if _, err := crash.States(rec, crash.Model{}); err != nil {
+		t.Fatalf("the control refused a record of an O_APPEND handle: %v", err)
+	}
+}
+
+// failStatFS serves every call for real but refuses Stat. The recorder asks the
+// base for the size of an O_APPEND handle, and a size it cannot get would make
+// every offset recorded through that handle wrong. Guessing zero in silence is
+// the failure this package exists to prevent, so the refusal is held.
+type failStatFS struct {
+	faultfs.FS
+}
+
+func (s failStatFS) Stat(string) (os.FileInfo, error) {
+	return nil, errors.New("the disk refused the stat")
+}
+
+func TestAnOAppendHandleWhoseSizeIsUnknownIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "wal")
+	if err := os.WriteFile(name, []byte("0123"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := crash.Record(failStatFS{faultfs.OS()}, dir)
+	f, err := rec.OpenFile(name, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if crash.Failure(rec) == nil {
+		t.Fatal("an O_APPEND handle of unknown size left no refusal, so Run would report a pass on wrong offsets")
+	}
+}
+
+// A handle opened without O_APPEND is not affected: it starts at zero, whatever
+// the file already holds. Without this, the fix above could set every handle's
+// offset to the file size and the append test would still pass.
+func TestAPlainHandleStartsAtZero(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "a")
+	if err := os.WriteFile(name, []byte("0123"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := crash.Record(faultfs.OS(), dir)
+	f, err := rec.OpenFile(name, os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("X")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	w := findEntry(t, crash.Entries(rec), "write")
+	if w.Off != 0 {
+		t.Errorf("a plain write was recorded at offset %d, want 0", w.Off)
+	}
+}
+
 // A rename the base refused changes nothing, so it must not enter the record.
 // Recording it moves the origin of a name that never moved, and every later
 // dependency hangs off an operation that did not happen.

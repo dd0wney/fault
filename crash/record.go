@@ -202,12 +202,35 @@ func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.Fi
 	// This package records. It does not inject.
 
 	// Whether the handle is a directory decides which pending set a Sync on it
-	// clears. The recorder asks the base directly rather than through itself,
-	// because its own bookkeeping is not an operation the scenario performed
-	// and must not take an index.
-	isDir := false
-	if st, statErr := r.base.Stat(name); statErr == nil {
-		isDir = st.IsDir()
+	// clears, and how many bytes the file already holds decides where an
+	// O_APPEND handle starts. The recorder asks the base directly rather than
+	// through itself, because its own bookkeeping is not an operation the
+	// scenario performed and must not take an index.
+	//
+	// The Stat runs AFTER the open on purpose: O_TRUNC empties the file as part
+	// of the open, so the size before it is not the size the first write lands
+	// at.
+	isDir, size := false, int64(0)
+	st, statErr := r.base.Stat(name)
+	if statErr == nil {
+		isDir, size = st.IsDir(), st.Size()
+	}
+
+	// O_APPEND puts every write at the current end of the file, so a handle
+	// opened that way starts at the size the file already holds and not at
+	// zero. Section 5.2 argues that tracking the offset by addition is sound
+	// because fs.File has no Seek; O_APPEND reaches the same hazard through a
+	// flag that ships today, and starting at the size is what closes it.
+	//
+	// A size the base will not give is a refusal, not a guess. Every offset
+	// recorded through the handle would be wrong, and a record that is wrong in
+	// silence is the failure this package exists to prevent.
+	var off int64
+	if flag&os.O_APPEND != 0 {
+		if statErr != nil {
+			r.fail(fmt.Errorf("crash: cannot size %q for an O_APPEND handle, so every offset recorded through it would be wrong: %w", name, statErr))
+		}
+		off = size
 	}
 
 	switch {
@@ -235,7 +258,7 @@ func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.Fi
 		r.add(entry{k: kTruncate, path: p, size: 0, needs: r.dependsOn(p)})
 	}
 
-	return &file{r: r, base: f, path: p, dir: isDir}, nil
+	return &file{r: r, base: f, path: p, dir: isDir, off: off}, nil
 }
 
 // exists reports whether p is present right now, so an O_CREATE open records
@@ -375,7 +398,10 @@ type file struct {
 	base faultfs.File
 	path string
 	dir  bool
-	off  int64 // tracked here because fs.File has no Seek
+	// off is tracked here because fs.File has no Seek. It starts at zero, or
+	// at the file's size when the open carried O_APPEND, and moves only by the
+	// bytes this handle's own reads and writes carry.
+	off int64
 }
 
 // The lock spans the base call as well as the record.
