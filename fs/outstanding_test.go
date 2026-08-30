@@ -83,33 +83,45 @@ func TestAFailedCloseStillReturnsTheHandle(t *testing.T) {
 // leaky opens a second file and returns early without closing it when the
 // second open succeeds and a later operation fails. tidy always closes.
 func TestOutstandingCatchesALeakOnTheErrorPath(t *testing.T) {
-	run := func(t *testing.T, store func(faultfs.FS, string) error) int {
+	// held collects handles the store leaked, so the TEST can close them after
+	// measuring. Windows cannot delete a file that still has an open handle,
+	// and t.TempDir cleanup fails there — which is how four leaked handles in
+	// this repository's own tests were found earlier today. Measuring first and
+	// closing after leaves the measurement untouched.
+	run := func(t *testing.T, store func(faultfs.FS, string, *[]faultfs.File) error) int {
 		t.Helper()
 		dir := t.TempDir()
 		worst := 0
 		for _, p := range fault.Sweep(t) {
 			fsys := faultfs.New(p, faultfs.OS())
-			_ = store(fsys, dir)
+
+			var held []faultfs.File
+			_ = store(fsys, dir, &held)
+
 			if got := fsys.Outstanding(); got > worst {
 				worst = got
+			}
+			for _, f := range held {
+				_ = f.Close()
 			}
 		}
 		return worst
 	}
 
-	leaky := func(fsys faultfs.FS, dir string) error {
+	leaky := func(fsys faultfs.FS, dir string, held *[]faultfs.File) error {
 		f, err := fsys.OpenFile(filepath.Join(dir, "a"), os.O_CREATE|os.O_RDWR, 0o600)
 		if err != nil {
 			return err
 		}
-		// No defer. A failure below leaks this handle.
+		// No defer. The store returns without closing, which is the defect.
 		if _, err := f.Write([]byte("x")); err != nil {
+			*held = append(*held, f)
 			return err
 		}
 		return f.Close()
 	}
 
-	tidy := func(fsys faultfs.FS, dir string) error {
+	tidy := func(fsys faultfs.FS, dir string, _ *[]faultfs.File) error {
 		f, err := fsys.OpenFile(filepath.Join(dir, "b"), os.O_CREATE|os.O_RDWR, 0o600)
 		if err != nil {
 			return err

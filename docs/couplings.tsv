@@ -5,8 +5,8 @@
 # id	kind	package	symbol	lines	note
 C1	control	github.com/dd0wney/fault	Points.Trip		Every adapter crosses this. The core decides which operation fails; the adapter decides what failing means.
 C2	control	github.com/dd0wney/fault	walk		The sweep's own control flow: it decides whether the caller gets another pass.
-C3	control	github.com/dd0wney/fault/fs	faultFS.OpenFile		The one adapter method returning another interface, so the only place injection can leak.
-C4	data	github.com/dd0wney/fault/fs	faultFS.fail		The error an adapter hands back, which the code under test applies predicates to.
+C3	control	github.com/dd0wney/fault/fs	Fault.OpenFile		The one adapter method returning another interface, so the only place injection can leak.
+C4	data	github.com/dd0wney/fault/fs	Fault.fail		The error an adapter hands back, which the code under test applies predicates to.
 C5	data	github.com/dd0wney/fault/alloc	Fault.Bytes		The allocator boundary, and the outstanding count that crosses it.
 C6	control	github.com/dd0wney/fault/role	Points.Op		The per-actor boundary: which role an operation belongs to is the adapter's judgement.
 C7	data	github.com/dd0wney/fault/fs	faultFile.Write		The byte count an adapter hands back with a partial failure. C4 covers the error; a caller acts on the count first, and under a short write it is neither 0 nor the whole buffer.
