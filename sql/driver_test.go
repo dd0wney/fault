@@ -28,6 +28,11 @@ type testDriver struct {
 	// closes counts connections actually closed at the base.
 	closes int
 
+	// resetCount counts ResetSession calls that reached the base. The pool
+	// calls ResetSession, so the adapter forwards it without counting it, and
+	// a test needs to see that it arrived.
+	resetCount int
+
 	// connectErr, when set, is what the base returns instead of a connection.
 	// A base that cannot fail leaves the adapter's own error path untested,
 	// and the mutation gate reported exactly that: removing `return nil, err`
@@ -50,6 +55,12 @@ func (d *testDriver) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, err
 	}
 	return &testConn{d: d}, nil
+}
+
+func (d *testDriver) resets() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.resetCount
 }
 
 func (d *testDriver) counts() (connects, closes int) {
@@ -104,7 +115,12 @@ func (c *testConn) ExecContext(ctx context.Context, query string, args []driver.
 
 func (c *testConn) Ping(ctx context.Context) error { return nil }
 
-func (c *testConn) ResetSession(ctx context.Context) error { return nil }
+func (c *testConn) ResetSession(ctx context.Context) error {
+	c.d.mu.Lock()
+	c.d.resetCount++
+	c.d.mu.Unlock()
+	return nil
+}
 
 type testStmt struct{}
 

@@ -166,12 +166,8 @@ func TestTwoLiveConnectionsAreRefused(t *testing.T) {
 // divergence is distinguishable from the six already scheduled.
 func TestTheWrapperForwardsWhatTheBaseImplements(t *testing.T) {
 	known := map[string]bool{
-		"ConnPrepareContext": true,
-		"ConnBeginTx":        true,
-		"QueryerContext":     true,
-		"ExecerContext":      true,
-		"Pinger":             true,
-		"SessionResetter":    true,
+		"QueryerContext": true,
+		"ExecerContext":  true,
 	}
 
 	optional := map[string]reflect.Type{
@@ -336,5 +332,194 @@ func TestOpenDBLimitsThePoolToOneConnection(t *testing.T) {
 
 	if got := db.Stats().MaxOpenConnections; got != 1 {
 		t.Errorf("MaxOpenConnections = %d, want 1 — 0 means unlimited, which is the value that makes the operation index meaningless", got)
+	}
+}
+
+// A statement's operations continue the same count the connection started.
+// Exec, Query and Close each trip; NumInput does not.
+func TestAStatementsOperationsEachCount(t *testing.T) {
+	// operation 1 connect, 2 prepare, 3 exec, 4 query, 5 stmt close
+	for _, op := range []struct {
+		n    int
+		name string
+	}{{3, "Exec"}, {4, "Query"}, {5, "Close"}} {
+		t.Run(op.name, func(t *testing.T) {
+			reached := false
+			for n, p := range fault.Sweep(t) {
+				f := faultsql.New(p, &testDriver{})
+				c, err := f.Connect(context.Background())
+				if err != nil {
+					continue
+				}
+				st, err := c.Prepare("select 1")
+				if err != nil {
+					_ = c.Close()
+					continue
+				}
+
+				_, execErr := st.Exec(nil)
+				_, queryErr := st.Query(nil)
+				closeErr := st.Close()
+				_ = c.Close()
+
+				if n != op.n {
+					continue
+				}
+				reached = true
+				errs := map[string]error{"Exec": execErr, "Query": queryErr, "Close": closeErr}
+				if got := errs[op.name]; !errors.Is(got, faultsql.ErrInjected) {
+					t.Errorf("%s() = %v at operation %d, want the injected error", op.name, got, op.n)
+				}
+			}
+			if !reached {
+				t.Fatalf("the sweep never armed operation %d, so nothing was asserted", op.n)
+			}
+		})
+	}
+}
+
+// NumInput is a property of the statement and not an operation on the
+// database. Counting it would insert an index between the prepare and the
+// exec, and every armed point after it would move.
+//
+// The assertion is positional rather than a count: with operation 3 armed, the
+// Exec must fail. If NumInput counted, operation 3 would be one of the hundred
+// NumInput calls and the Exec would succeed.
+func TestNumInputDoesNotCount(t *testing.T) {
+	reached := false
+	for n, p := range fault.Sweep(t) {
+		f := faultsql.New(p, &testDriver{})
+		c, err := f.Connect(context.Background()) // 1
+		if err != nil {
+			continue
+		}
+		st, err := c.Prepare("select 1") // 2
+		if err != nil {
+			_ = c.Close()
+			continue
+		}
+		for range 100 {
+			_ = st.NumInput() // must be none
+		}
+		_, execErr := st.Exec(nil) // 3
+		_ = st.Close()
+		_ = c.Close()
+
+		if n != 3 {
+			continue
+		}
+		reached = true
+		if !errors.Is(execErr, faultsql.ErrInjected) {
+			t.Errorf("Exec() = %v with operation 3 armed, want the injected error — a hundred NumInput calls moved the index", execErr)
+		}
+	}
+	if !reached {
+		t.Fatal("the sweep never armed operation 3, so nothing was asserted")
+	}
+}
+
+// Commit and Rollback each count. A caller that ignores the error from a
+// Commit believes its data is durable when it is not, and that is the sharpest
+// defect this adapter can inject.
+func TestATransactionsOperationsEachCount(t *testing.T) {
+	for _, name := range []string{"Commit", "Rollback"} {
+		t.Run(name, func(t *testing.T) {
+			reached := false
+			for n, p := range fault.Sweep(t) {
+				f := faultsql.New(p, &testDriver{})
+				c, err := f.Connect(context.Background()) // 1
+				if err != nil {
+					continue
+				}
+				x, err := c.Begin() //nolint:staticcheck // driver.Conn requires Begin, so the wrapper is tested through it
+				if err != nil {
+					_ = c.Close()
+					continue
+				}
+
+				var got error
+				if name == "Commit" {
+					got = x.Commit() // 3
+				} else {
+					got = x.Rollback() // 3
+				}
+				_ = c.Close()
+
+				if n != 3 {
+					continue
+				}
+				reached = true
+				if !errors.Is(got, faultsql.ErrInjected) {
+					t.Errorf("%s() = %v with operation 3 armed, want the injected error", name, got)
+				}
+			}
+			if !reached {
+				t.Fatal("the sweep never armed operation 3, so nothing was asserted")
+			}
+		})
+	}
+}
+
+// THE ONE DELIBERATE EXCEPTION, asserted so it cannot become an accident.
+//
+// The POOL calls ResetSession, not the caller, and it decides when from its own
+// state: whether a connection was reused, how long it sat, what else the
+// program did. Counting it would make the N-th operation a different operation
+// between two runs of one scenario, which is exactly the property fork 2
+// protects.
+//
+// It must still be FORWARDED. Omitting the method would stop database/sql
+// calling the base driver's reset at all, so the driver under test would keep
+// state across pooled uses that it does not keep when it runs unwrapped.
+func TestResetSessionIsForwardedAndDoesNotCount(t *testing.T) {
+	base := &testDriver{}
+	f := faultsql.New(&fault.Points{}, base)
+
+	c, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	r, ok := c.(driver.SessionResetter)
+	if !ok {
+		t.Fatal("the wrapper does not implement driver.SessionResetter, so database/sql would never reset the base driver's session")
+	}
+	for range 5 {
+		if err := r.ResetSession(context.Background()); err != nil {
+			t.Fatalf("ResetSession: %v", err)
+		}
+	}
+	_ = c.Close()
+
+	if got := base.resets(); got != 5 {
+		t.Errorf("the base saw %d reset(s), want 5 — the wrapper must forward it, not swallow it", got)
+	}
+
+	// Positional again: with operation 2 armed, the Close must fail. Five
+	// resets in between must not take an index.
+	reached := false
+	for n, p := range fault.Sweep(t) {
+		f := faultsql.New(p, &testDriver{})
+		c, err := f.Connect(context.Background()) // 1
+		if err != nil {
+			continue
+		}
+		if r, ok := c.(driver.SessionResetter); ok {
+			for range 5 {
+				_ = r.ResetSession(context.Background()) // must be none
+			}
+		}
+		closeErr := c.Close() // 2
+
+		if n != 2 {
+			continue
+		}
+		reached = true
+		if !errors.Is(closeErr, faultsql.ErrInjected) {
+			t.Errorf("Close() = %v with operation 2 armed, want the injected error — five resets moved the index", closeErr)
+		}
+	}
+	if !reached {
+		t.Fatal("the sweep never armed operation 2, so nothing was asserted")
 	}
 }
