@@ -1,6 +1,8 @@
 package crash_test
 
 import (
+	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -140,5 +142,225 @@ func TestTheControlHoldsForABackpatchedHeader(t *testing.T) {
 	// replay would not reproduce the directory and this would fail loudly.
 	if _, err := crash.Plan(rec, crash.Model{}); err != nil {
 		t.Fatalf("the whole-record control rejected a seek-and-backpatch scenario: %v", err)
+	}
+}
+
+// noPositionalFS hands back a File offering only the five methods of
+// faultfs.File. Embedding the interface is what removes Seek and WriteAt: the
+// method set of noPositionalFile is the interface's, whatever the dynamic
+// value beneath it can do.
+//
+// It exists so the refusal path can be reached at all. Over faultfs.OS() the
+// assertions inside Seek and WriteAt always succeed, so every test written
+// against a real filesystem exercises the branch that works.
+type noPositionalFS struct {
+	faultfs.FS
+}
+
+func (n noPositionalFS) OpenFile(name string, flag int, perm os.FileMode) (faultfs.File, error) {
+	f, err := n.FS.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return noPositionalFile{f}, nil
+}
+
+type noPositionalFile struct {
+	faultfs.File
+}
+
+// A refusal carries a count as well as an error, and the count is read first.
+//
+// This is coupling row C7 on the recorder's side of the boundary: "a caller
+// acts on the count first, and under a short write it is neither 0 nor the
+// whole buffer". C7 named the hazard for fault/fs and PR #2 asserted it there.
+// The same feature crossed into this recorder and the assertion did not follow,
+// so a refusal could report any count at all and every test stayed green.
+func TestARefusedSeekOrWriteAtReportsZeroBytes(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(noPositionalFS{faultfs.OS()}, dir)
+
+	f, err := rec.OpenFile(filepath.Join(dir, "a"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	s, ok := f.(seeker)
+	if !ok {
+		t.Fatal("the recorder offers no Seek, so its refusal cannot be reached")
+	}
+	got, err := s.Seek(4, io.SeekStart)
+	if !errors.Is(err, errors.ErrUnsupported) {
+		t.Errorf("a refused Seek gives %v, want an error wrapping errors.ErrUnsupported", err)
+	}
+	if got != 0 {
+		t.Errorf("a refused Seek reports offset %d, want 0", got)
+	}
+
+	w, ok := f.(writerAt)
+	if !ok {
+		t.Fatal("the recorder offers no WriteAt, so its refusal cannot be reached")
+	}
+	n, err := w.WriteAt([]byte("AB"), 0)
+	if !errors.Is(err, errors.ErrUnsupported) {
+		t.Errorf("a refused WriteAt gives %v, want an error wrapping errors.ErrUnsupported", err)
+	}
+	if n != 0 {
+		t.Errorf("a refused WriteAt reports %d bytes, want 0", n)
+	}
+}
+
+// The record must hold the bytes a positional write moved, not a buffer of the
+// right length.
+//
+// Entries exposes Data for exactly this, and its own comment says so: "a write
+// records only the bytes that landed". No test asserted it for WriteAt, so the
+// copy that fills the entry could be deleted outright with nothing to notice --
+// and every rebuilt state is made from that data.
+func TestAWriteAtRecordsTheBytesItMoved(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "a")
+	if err := os.WriteFile(name, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := crash.Record(faultfs.OS(), dir)
+	f, err := rec.OpenFile(name, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, ok := f.(writerAt)
+	if !ok {
+		t.Fatal("the recorder does not offer WriteAt over an os.File")
+	}
+	if _, err := w.WriteAt([]byte("AB"), 6); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var writes []crash.Entry
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "write" {
+			writes = append(writes, e)
+		}
+	}
+	if len(writes) != 1 {
+		t.Fatalf("got %d write entries, want 1", len(writes))
+	}
+	if !bytes.Equal(writes[0].Data, []byte("AB")) {
+		t.Errorf("the WriteAt recorded %q, want %q", writes[0].Data, "AB")
+	}
+}
+
+// The control must hold for a positional backpatch, not only a seeking one.
+//
+// TestTheControlHoldsForABackpatchedHeader covers the same shape with Seek and
+// Write, and it was the only test driving the whole-record replay. So the
+// replay had never been run against a record containing a WriteAt at all.
+func TestTheControlHoldsForAWriteAtBackpatch(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "sst")
+
+	rec := crash.Record(faultfs.OS(), dir)
+	f, err := rec.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("HDR?body-bytes-here")); err != nil {
+		t.Fatal(err)
+	}
+	w, ok := f.(writerAt)
+	if !ok {
+		t.Fatal("no WriteAt")
+	}
+	// Backpatch the header in place, which is what a positional write is for.
+	if _, err := w.WriteAt([]byte("HDR!"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := crash.Plan(rec, crash.Model{}); err != nil {
+		t.Fatalf("the whole-record control rejected a WriteAt backpatch: %v", err)
+	}
+}
+
+// A write that moved nothing is not a write.
+//
+// The guard is n > 0. Every neighbouring bound reads the same on a two-byte
+// write, so the boundary needs the two cases that separate them: zero bytes,
+// where an entry must not appear, and one byte, where it must.
+func TestAWriteAtOfNoBytesRecordsNothing(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "a")
+	if err := os.WriteFile(name, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := crash.Record(faultfs.OS(), dir)
+	f, err := rec.OpenFile(name, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, ok := f.(writerAt)
+	if !ok {
+		t.Fatal("the recorder does not offer WriteAt over an os.File")
+	}
+	n, err := w.WriteAt([]byte{}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("the base moved %d bytes for an empty buffer, want 0", n)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "write" {
+			t.Errorf("a WriteAt that moved no bytes was recorded at offset %d", e.Off)
+		}
+	}
+}
+
+func TestAWriteAtOfOneByteIsRecorded(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "a")
+	if err := os.WriteFile(name, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := crash.Record(faultfs.OS(), dir)
+	f, err := rec.OpenFile(name, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, ok := f.(writerAt)
+	if !ok {
+		t.Fatal("the recorder does not offer WriteAt over an os.File")
+	}
+	if _, err := w.WriteAt([]byte("X"), 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var writes []crash.Entry
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "write" {
+			writes = append(writes, e)
+		}
+	}
+	if len(writes) != 1 {
+		t.Fatalf("got %d write entries for a one-byte WriteAt, want 1", len(writes))
+	}
+	if writes[0].Off != 3 || !bytes.Equal(writes[0].Data, []byte("X")) {
+		t.Errorf("recorded offset %d data %q, want offset 3 data %q", writes[0].Off, writes[0].Data, "X")
 	}
 }
