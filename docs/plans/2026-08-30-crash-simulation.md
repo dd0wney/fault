@@ -19,7 +19,15 @@ Every task's requirements implicitly include this section.
 - **`crash` does not import the core `fault` package.** Record-once uses no `Points` and no `Trip`. If an import of the core appears, stop and raise it — it means the design drifted.
 - **Exported surface is exactly seven names:** `Record`, `Recorder`, `Run`, `Model`, `Cover`, `Exhaustive`, `Prefixes`. Adding an eighth needs a decision recorded in the spec, not a commit.
 - **`gofmt` clean.** CI checks formatting. Run `gofmt -l .` before every commit and expect no output.
-- **`golangci-lint run` must pass before committing.**
+- **`go vet ./...` must pass before committing.** NOT `golangci-lint`: see the
+  note below.
+- **`golangci-lint` cannot run in this environment and is not a gate here.**
+  The installed binary is 2.12.2, built with go1.26.3, and it fails to typecheck
+  the Go 1.27.0 standard library (`internal/poll/splice_linux.go:237: unknown
+  field rfd`) before it reaches any repository code. CI does not run it either —
+  the four jobs are `test`, `checks`, `tools` and `mutation`, and none invokes
+  it. Do not report a `golangci-lint` pass you did not get, and do not skip
+  `go vet`, which does work and which CI does run.
 - **CI is 3 operating systems × 2 Go versions.** Local gates say nothing about Windows. Never report CI from a local run — read `gh run view --json conclusion`.
 - **Every gate gets a selftest that runs first.** A gate nobody has watched fail is not a gate.
 - **No number in a document that was not produced by running the command that yields it.** This includes test counts, state counts and percentages.
