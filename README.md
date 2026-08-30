@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="fault" width="360">
+</p>
+
 # fault
 
 Walk the point of failure through every operation your code performs.
