@@ -59,6 +59,7 @@ on the first power cut.
 | Crash **during** recovery | The check reopens once. A store that damages its own state while repairing it, and then dies again, is out of reach. This is a real defect class. It is named here rather than hidden. |
 | Crash combined with an injected error | Needs a record produced by a run that took its error branch, and one happy-path record cannot describe that. §4.2 keeps the door open at no cost. |
 | A stopping recorder, by panic and recover | §4.1. It buys only the row above, and it costs a panic driven through the code under test plus a stability check of the kind `fault/role` needs. |
+| A `Seek` or positional write in the recorder | §5.2. `fs.File` has neither, so offset tracking by addition is sound today. An adapter over an interface that seeks needs this package to change first, and the whole-record control is what would catch the mistake. |
 | Modelling one named filesystem's exact ordering | The model is an approximation with a name, in the sense of §3. A store that survives it may still fail on a device that behaves differently, and §10 says so. |
 
 ## 3. Prior art
@@ -150,6 +151,26 @@ or mkdir durable as soon as it returns.
 
 The strict rule is the default on purpose. A false alarm costs a reader an hour.
 A missed defect costs data.
+
+### 5.2 The recorder tracks the file offset, and that is only sound without `Seek`
+
+`fs.File` is `Read`, `Write`, `Sync`, `Truncate` and `Close`. It has no `Seek`
+and no `WriteAt`, so a handle's offset moves only by the bytes its reads and
+writes carry, and the recorder can track it by addition.
+
+**That is a load-bearing invariant, not an implementation detail.** If
+`fault/fs` ever gains `Seek` or a positional write, every recorded offset after
+the first seek is wrong, and the record stays internally consistent while
+describing a file the scenario never wrote. §9.2's control catches it -- the
+whole-record replay would stop matching the real directory -- which is the
+reason that control is worth its cost.
+
+This is not hypothetical. The graphdb project's `pkg/vfs.File` embeds
+`io.Seeker` and uses it at five production sites, including an SSTable writer
+that seeks to 0 to backpatch a header after writing the body. An adapter over
+an interface of that shape cannot use this recorder unchanged. It must record
+the seek as an entry and carry the resulting offset, and that is a change to
+this package, not to the adapter.
 
 ## 6. The record
 
@@ -420,6 +441,27 @@ Stated in the package documentation, in the manner of the existing limits.
   proves that the store opens. This is the same trap the core documentation
   names for adapters: a method that calls `Trip` and ignores the answer keeps
   the pass count exactly right, so counting passes never proves anything.
+- **Nothing useful, under the POSIX metadata rule, when the FS under test
+  cannot sync a directory.** This is the sharpest of the limits and it was
+  missed until the graphdb session named it.
+
+  The default model holds a rename pending until the directory that holds the
+  name is synced. If the filesystem interface the store is written against has
+  no way to sync a directory, the store cannot make that rename durable by any
+  means available to it. The sweep then reports a defect that is **unfixable
+  through the seam**: every state it complains about is one the code had no way
+  to avoid reaching.
+
+  A tool that reports an unfixable defect is worse than one that reports
+  nothing, because a reader who cannot act on a finding learns to skip the next
+  one. So an adapter whose FS cannot sync a directory must set
+  `MetadataDurable: true`, and this package documents that requirement rather
+  than leaving it to be discovered.
+
+  `fault/fs` can perform the sync on Linux and macOS, because
+  `OpenFile(dir, os.O_RDONLY, 0)` returns a handle whose `Sync` reaches the
+  directory. It cannot on Windows. §5.1 already said so for the platform; this
+  says it for the interface, which is the more general case.
 
 ## 11. Test plan
 
