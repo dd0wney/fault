@@ -161,9 +161,21 @@ func survives(t *testing.T, save saveFunc, m crash.Model) (bool, []breach) {
 	return len(out) == 0, out
 }
 
-// TestTheFourReferenceStores is the acceptance test for this package. It is
-// the claim itself: that crash can tell a store that survives a power cut from
-// one that does not.
+// refStoreCase is one row of the reference-store acceptance table. The type
+// is shared, because the table itself is split in two: safeStore and
+// noFileSync call syncDir, which cannot build on Windows, so their rows live
+// in stores_dirsync_test.go behind //go:build !windows, and would not compile
+// here if they stayed in this table.
+type refStoreCase struct {
+	name     string
+	save     saveFunc
+	model    crash.Model
+	survives bool
+}
+
+// runReferenceStoreCases runs one half of the acceptance table and reports
+// each row the same way, so the two halves cannot drift into different
+// reporting rules.
 //
 // A row can fail in two directions, and they mean opposite things.
 //
@@ -175,26 +187,8 @@ func survives(t *testing.T, save saveFunc, m crash.Model) (bool, []breach) {
 // the row to read first: if it reports survives = true, the durability model
 // is not separating a file sync from a directory sync, and the fix belongs in
 // split, not here.
-func TestTheFourReferenceStores(t *testing.T) {
-	cases := []struct {
-		name     string
-		save     saveFunc
-		model    crash.Model
-		survives bool
-	}{
-		{"safeStore/posix", safeStore, crash.Model{}, true},
-		{"safeStore/metadataDurable", safeStore, crash.Model{MetadataDurable: true}, true},
-		{"noFileSync/posix", noFileSync, crash.Model{}, false},
-		{"noFileSync/metadataDurable", noFileSync, crash.Model{MetadataDurable: true}, false},
-		{"noDirSync/posix", noDirSync, crash.Model{}, false},
-		{"noDirSync/metadataDurable", noDirSync, crash.Model{MetadataDurable: true}, true},
-		// Sector: 1 is what makes the torn write a unit. Under the whole-call
-		// model an in-place write is lost entirely or not at all, and both of
-		// those states hold a legal value.
-		{"inPlaceStore/posix", inPlaceStore, crash.Model{Sector: 1}, false},
-		{"inPlaceStore/metadataDurable", inPlaceStore, crash.Model{Sector: 1, MetadataDurable: true}, false},
-	}
-
+func runReferenceStoreCases(t *testing.T, cases []refStoreCase) {
+	t.Helper()
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got, breaches := survives(t, c.save, c.model)
@@ -212,4 +206,22 @@ func TestTheFourReferenceStores(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTheFourReferenceStores is half of the acceptance test for this package:
+// the claim itself, restricted to the two stores that need no directory sync
+// and so build and run on every platform, Windows included. safeStore and
+// noFileSync complete the claim in
+// TestTheFourReferenceStoresThatSyncADirectory, which builds everywhere except
+// Windows because syncDir cannot run there.
+func TestTheFourReferenceStores(t *testing.T) {
+	runReferenceStoreCases(t, []refStoreCase{
+		{"noDirSync/posix", noDirSync, crash.Model{}, false},
+		{"noDirSync/metadataDurable", noDirSync, crash.Model{MetadataDurable: true}, true},
+		// Sector: 1 is what makes the torn write a unit. Under the whole-call
+		// model an in-place write is lost entirely or not at all, and both of
+		// those states hold a legal value.
+		{"inPlaceStore/posix", inPlaceStore, crash.Model{Sector: 1}, false},
+		{"inPlaceStore/metadataDurable", inPlaceStore, crash.Model{Sector: 1, MetadataDurable: true}, false},
+	})
 }

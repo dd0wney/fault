@@ -14,52 +14,15 @@ import (
 // Each store publishes one value under dir and returns when it believes the
 // value is on the disk. What separates them is only which sync they skip, so
 // the table that runs them measures the durability model and nothing else.
+//
+// safeStore and noFileSync call syncDir, which opens a directory and syncs the
+// handle -- a call that fails on Windows, where a directory handle cannot be
+// synced. Both of them live in stores_dirsync_test.go, behind
+// //go:build !windows, together with syncDir itself. noDirSync and
+// inPlaceStore below never call syncDir, so they build on every platform.
 
 // saveFunc is the shape every reference store has.
 type saveFunc func(fsys faultfs.FS, dir, value string) error
-
-// safeStore writes a temporary file, syncs it, renames it into place, and
-// syncs the directory. It must survive every state under both models.
-func safeStore(fsys faultfs.FS, dir, value string) error {
-	tmp := filepath.Join(dir, "data.tmp")
-	f, err := fsys.OpenFile(tmp, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write([]byte(value)); err != nil {
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := fsys.Rename(tmp, filepath.Join(dir, "data")); err != nil {
-		return err
-	}
-	return syncDir(fsys, dir)
-}
-
-// noFileSync never syncs the temporary file, so the rename can publish a name
-// whose contents never reached the disk.
-func noFileSync(fsys faultfs.FS, dir, value string) error {
-	tmp := filepath.Join(dir, "data.tmp")
-	f, err := fsys.OpenFile(tmp, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write([]byte(value)); err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := fsys.Rename(tmp, filepath.Join(dir, "data")); err != nil {
-		return err
-	}
-	return syncDir(fsys, dir)
-}
 
 // noDirSync syncs the file but never the directory, so the rename itself can
 // be lost. It fails under the POSIX rule and survives under MetadataDurable,
@@ -102,22 +65,6 @@ func inPlaceStore(fsys faultfs.FS, dir, value string) error {
 		return err
 	}
 	return f.Close()
-}
-
-// syncDir is how a Go program makes a rename durable: open the directory and
-// sync the handle. It fails on Windows, which is why Model.MetadataDurable
-// exists, and the error travels back through save to a t.Fatalf rather than
-// being swallowed. Task 14 splits the build for that platform.
-func syncDir(fsys faultfs.FS, dir string) error {
-	d, err := fsys.OpenFile(dir, os.O_RDONLY, 0)
-	if err != nil {
-		return err
-	}
-	if err := d.Sync(); err != nil {
-		_ = d.Close()
-		return err
-	}
-	return d.Close()
 }
 
 // readStore reads back the published value. It is the one observation the
