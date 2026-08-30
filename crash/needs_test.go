@@ -86,3 +86,40 @@ func TestAPreExistingFileHasNoDependency(t *testing.T) {
 		t.Errorf("the write needs %v, want none — the file predates the record", needs[1])
 	}
 }
+
+// O_CREATE on a path already on disk before Record started must not be
+// recorded as a create, and a write into it must depend on nothing. A
+// flag-only guess (O_CREATE means create) gets this wrong, because the OS
+// itself treats O_CREATE on an existing path as a plain open. A spurious
+// create entry would give the write a dependency on an entry no crash can
+// drop, so states that should exist would stop being generated. This is the
+// regression guard for that fix.
+func TestOCreateOnAFileThatAlreadyExistsRecordsNoCreate(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a"), []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := crash.Record(faultfs.OS(), dir)
+
+	f, err := rec.OpenFile(filepath.Join(dir, "a"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "create" {
+			t.Fatalf("recorded a create entry for a path that predates Record: %+v", e)
+		}
+	}
+
+	if _, err := f.Write([]byte("v2")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	needs := crash.Needs(rec)
+	if len(needs) < 2 {
+		t.Fatalf("got %d entries, want at least 2", len(needs))
+	}
+	if len(needs[1]) != 0 {
+		t.Errorf("the write needs %v, want none — O_CREATE on an existing file is not a create", needs[1])
+	}
+}

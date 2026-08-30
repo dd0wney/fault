@@ -120,12 +120,17 @@ func (r *Recorder) add(e entry) int {
 
 func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.File, error) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	p, _ := r.rel(name)
 	// existedBefore must run before the base call below: O_CREATE can bring p
 	// into existence, and a Stat taken after that call would see the effect of
-	// THIS call rather than what came before it.
+	// THIS call rather than what came before it. The lock spans both, and the
+	// base call itself, so two callers opening the same new path cannot both
+	// see "did not exist" and both record a create. Read and Write already
+	// hold their lock across the base call for the same reason; this is that
+	// same shape.
 	existed := r.existedBefore(p)
-	r.mu.Unlock()
 
 	f, err := r.base.OpenFile(name, flag, perm)
 	if err != nil {
@@ -152,8 +157,6 @@ func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.Fi
 		isDir = st.IsDir()
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	switch {
 	case flag&os.O_CREATE != 0 && !existed:
 		n := r.add(entry{k: kCreate, path: p})
