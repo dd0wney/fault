@@ -68,16 +68,33 @@ type Recorder struct {
 	// A path absent from the map existed in the initial snapshot, so nothing
 	// depends on its creation.
 	origin map[string]int
+
+	// snap is the tree under root at the moment Record was called. It is
+	// written once, here, and never again, so no lock guards reading it
+	// afterwards. The replay starts from this copy rather than from root
+	// itself, and existedBefore answers from it rather than from a live
+	// Stat, so a change a later call makes to root cannot be mistaken for
+	// what was already there.
+	snap tree
 }
 
 // Record wraps base and records every change under root, so a crash state can
 // be rebuilt.
 //
-// Task 4 adds the initial snapshot and extends this comment to say why it is
-// taken. Until then this describes only what it does, because a comment that
-// promises absent behaviour is a defect.
+// It copies the tree under root once, before anything else runs, and holds
+// that copy as snap. This is what lets a test build its initial state before
+// recording: the setup never enters the crash space, because the replay
+// starts from the snapshot rather than from root, and a state a power cut
+// could leave is only ever one Record made.
 func Record(base faultfs.FS, root string) *Recorder {
-	return &Recorder{base: base, root: root, origin: map[string]int{}}
+	r := &Recorder{base: base, root: root, origin: map[string]int{}}
+	snap, err := readTree(root)
+	if err != nil {
+		r.fail(fmt.Errorf("crash: cannot snapshot the record root %q: %w", root, err))
+		snap = tree{}
+	}
+	r.snap = snap
+	return r
 }
 
 // failure reports the first refusal, or nil. Run turns it into t.Fatal. It is
@@ -173,11 +190,21 @@ func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.Fi
 // its create entry; a path already on disk arrived from the snapshot and is
 // durable by construction, so nothing needs its creation.
 //
-// Task 4 answers this from the snapshot; until then, the base is asked
-// directly, which is bookkeeping and therefore takes no index.
+// This answers from snap and origin, not from a live Stat: root can change
+// between the moment Record ran and the moment this call happens, and asking
+// the base directly would then answer for the wrong instant. snap alone is
+// not enough, because it is fixed at Record time and this run's own creates
+// happen after that: a path this run already created — origin holds an entry
+// for it — existed before a later call on the same path, even though it is
+// absent from snap. This is also what keeps two concurrent creates of the
+// same new path from both seeing "did not exist": the second one to acquire
+// r.mu finds the first one's origin entry.
 func (r *Recorder) existedBefore(p string) bool {
-	_, err := r.base.Stat(filepath.Join(r.root, filepath.FromSlash(p)))
-	return err == nil
+	if _, ok := r.snap[p]; ok {
+		return true
+	}
+	_, ok := r.origin[p]
+	return ok
 }
 
 func (r *Recorder) Remove(name string) error {
