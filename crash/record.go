@@ -1,7 +1,6 @@
 package crash
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,17 +120,24 @@ func (r *Recorder) add(e entry) int {
 
 func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.File, error) {
 	r.mu.Lock()
-	p, ok := r.rel(name)
-	if !ok {
-		r.mu.Unlock()
-		return nil, &os.PathError{Op: "open", Path: name, Err: errors.New("outside the recorded root")}
-	}
+	p, _ := r.rel(name)
 	r.mu.Unlock()
 
 	f, err := r.base.OpenFile(name, flag, perm)
 	if err != nil {
 		return nil, err
 	}
+
+	// A name outside root is held as a refusal and the call is still SERVED,
+	// which is what the other five methods do.
+	//
+	// Returning an invented *os.PathError here would be worse than the problem
+	// it reports. The scenario would take an error branch it never takes in
+	// production, so the record would describe a different program. The held
+	// refusal already guarantees that Run fails before any state is built, so
+	// nothing recorded under the empty path is ever used.
+	//
+	// This package records. It does not inject.
 
 	// Whether the handle is a directory decides which pending set a Sync on it
 	// clears. The recorder asks the base directly rather than through itself,
@@ -232,11 +238,20 @@ type file struct {
 	off  int64 // tracked here because fs.File has no Seek
 }
 
+// The lock spans the base call as well as the record.
+//
+// fs.FS requires an implementation to be safe for concurrent use, and an
+// unlocked `f.off += n` is a data race that the race detector finds in
+// seconds once two goroutines share one handle. Serialising also buys the
+// property that matters more: the offset this handle reports and the
+// position the base actually wrote at cannot disagree, because nothing can
+// interleave between them. A test tool may pay a mutex for that.
 func (f *file) Read(b []byte) (int, error) {
-	n, err := f.base.Read(b)
 	f.r.mu.Lock()
+	defer f.r.mu.Unlock()
+
+	n, err := f.base.Read(b)
 	f.r.add(entry{k: kRead, path: f.path})
-	f.r.mu.Unlock()
 	// A read advances the offset, so a later write lands after it. Missing
 	// this puts every write in the record at the wrong place.
 	f.off += int64(n)
@@ -244,11 +259,13 @@ func (f *file) Read(b []byte) (int, error) {
 }
 
 func (f *file) Write(b []byte) (int, error) {
+	f.r.mu.Lock()
+	defer f.r.mu.Unlock()
+
 	n, err := f.base.Write(b)
 	if n > 0 {
 		data := make([]byte, n)
 		copy(data, b[:n])
-		f.r.mu.Lock()
 		f.r.add(entry{
 			k:     kWrite,
 			path:  f.path,
@@ -256,7 +273,6 @@ func (f *file) Write(b []byte) (int, error) {
 			data:  data, // only what landed, never what was offered
 			needs: f.r.dependsOn(f.path),
 		})
-		f.r.mu.Unlock()
 		f.off += int64(n)
 	}
 	return n, err

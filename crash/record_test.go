@@ -3,6 +3,7 @@ package crash_test
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/dd0wney/fault/crash"
@@ -88,4 +89,143 @@ func TestANameOutsideRootIsRefused(t *testing.T) {
 	if crash.Failure(rec) == nil {
 		t.Fatal("a write outside root left no refusal, so Run would report a pass")
 	}
+}
+
+// The offset a handle tracks is Recorder state, not file state, so two
+// goroutines that share one handle touch it concurrently. Review finding 1
+// caught a data race here: -race reported it at record.go:260 inside seconds
+// once a Write moved the offset outside the lock. This is the regression
+// guard for that fix.
+func TestConcurrentWritesOnOneHandleDoNotRace(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(faultfs.OS(), dir)
+
+	name := filepath.Join(dir, "a")
+	f, err := rec.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	const goroutines = 4
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			if _, err := f.Write([]byte("x")); err != nil {
+				t.Errorf("write: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}
+
+// shortWriteFS wraps a real FS but hands back a File whose Write moves at
+// most half the offered buffer, without reporting an error. It exists to
+// drive TestAShortWriteRecordsOnlyWhatLanded, which review finding 3 asked
+// for: nothing checked that a torn write is recorded as torn.
+type shortWriteFS struct {
+	faultfs.FS
+}
+
+func (s shortWriteFS) OpenFile(name string, flag int, perm os.FileMode) (faultfs.File, error) {
+	f, err := s.FS.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return shortWriteFile{f}, nil
+}
+
+type shortWriteFile struct {
+	faultfs.File
+}
+
+func (s shortWriteFile) Write(b []byte) (int, error) {
+	half := len(b) / 2
+	if half == 0 && len(b) > 0 {
+		half = 1
+	}
+	return s.File.Write(b[:half])
+}
+
+// data must hold only the bytes the base actually wrote, never the whole
+// buffer a caller offered. Review finding 3 found this property untested.
+func TestAShortWriteRecordsOnlyWhatLanded(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(shortWriteFS{faultfs.OS()}, dir)
+
+	name := filepath.Join(dir, "a")
+	f, err := rec.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	offered := []byte("hello world")
+	n, err := f.Write(offered)
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if n == len(offered) {
+		t.Fatalf("the stub did not shorten the write, so this test proves nothing")
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	write := findEntry(t, crash.Entries(rec), "write")
+	if len(write.Data) != n {
+		t.Errorf("recorded %d bytes, want %d (only what landed)", len(write.Data), n)
+	}
+	if string(write.Data) != string(offered[:n]) {
+		t.Errorf("recorded data = %q, want %q", write.Data, offered[:n])
+	}
+}
+
+// A read advances the offset, so a write that follows it must be recorded at
+// the position after the read, not at zero. Review finding 3 found this
+// property untested.
+func TestAReadAdvancesTheOffsetForTheNextWrite(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "a")
+	if err := os.WriteFile(name, []byte("0123456789"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rec := crash.Record(faultfs.OS(), dir)
+	f, err := rec.OpenFile(name, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	n, err := f.Read(make([]byte, 4))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if _, err := f.Write([]byte("X")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	write := findEntry(t, crash.Entries(rec), "write")
+	if write.Off != int64(n) {
+		t.Errorf("write recorded at offset %d, want %d (the bytes read)", write.Off, n)
+	}
+}
+
+// findEntry returns the first entry of kind, or fails the test. Two tests
+// share this rather than repeating the same loop.
+func findEntry(t *testing.T, entries []crash.Entry, kind string) crash.Entry {
+	t.Helper()
+	for _, e := range entries {
+		if e.Kind == kind {
+			return e
+		}
+	}
+	t.Fatalf("no %s entry recorded", kind)
+	return crash.Entry{}
 }
