@@ -27,6 +27,12 @@ type testDriver struct {
 	connects int
 	// closes counts connections actually closed at the base.
 	closes int
+
+	// connectErr, when set, is what the base returns instead of a connection.
+	// A base that cannot fail leaves the adapter's own error path untested,
+	// and the mutation gate reported exactly that: removing `return nil, err`
+	// from Connect changed no test result.
+	connectErr error
 }
 
 func (d *testDriver) Open(name string) (driver.Conn, error) {
@@ -38,7 +44,11 @@ func (d *testDriver) Driver() driver.Driver { return d }
 func (d *testDriver) Connect(ctx context.Context) (driver.Conn, error) {
 	d.mu.Lock()
 	d.connects++
+	err := d.connectErr
 	d.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	return &testConn{d: d}, nil
 }
 
