@@ -123,3 +123,47 @@ func TestOCreateOnAFileThatAlreadyExistsRecordsNoCreate(t *testing.T) {
 		t.Errorf("the write needs %v, want none — O_CREATE on an existing file is not a create", needs[1])
 	}
 }
+
+// A path that predates Record has no origin entry, so a naive "existed
+// before" answer that only ever consults the initial snapshot never learns
+// that this run removed it. Recreating it with O_CREATE must still record a
+// create, and a write after that must depend on it, or a replay later hits a
+// write with no entry that created its file.
+func TestRemoveThenRecreateOfASnapshotPathRecordsACreate(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a"), []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := crash.Record(faultfs.OS(), dir)
+
+	if err := rec.Remove(filepath.Join(dir, "a")); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	f, err := rec.OpenFile(filepath.Join(dir, "a"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	entries := crash.Entries(rec)
+	createIdx := -1
+	for i, e := range entries {
+		if e.Kind == "create" {
+			createIdx = i
+		}
+	}
+	if createIdx == -1 {
+		t.Fatalf("recorded no create entry for a path removed then recreated: %+v", entries)
+	}
+
+	if _, err := f.Write([]byte("v2")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	needs := crash.Needs(rec)
+	write := needs[len(needs)-1]
+	wantN := entries[createIdx].N
+	if len(write) != 1 || write[0] != wantN {
+		t.Errorf("the write needs %v, want [%d] — the recreate", write, wantN)
+	}
+}

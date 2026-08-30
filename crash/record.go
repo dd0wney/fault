@@ -72,10 +72,16 @@ type Recorder struct {
 	// snap is the tree under root at the moment Record was called. It is
 	// written once, here, and never again, so no lock guards reading it
 	// afterwards. The replay starts from this copy rather than from root
-	// itself, and existedBefore answers from it rather than from a live
-	// Stat, so a change a later call makes to root cannot be mistaken for
+	// itself, so a change a later call makes to root cannot be mistaken for
 	// what was already there.
 	snap tree
+
+	// live is the set of paths that exist right now, under r.mu. It starts
+	// as snap's keys and is kept exactly in step with every create, mkdir,
+	// rename and remove this run makes. exists answers from this, not from
+	// snap: snap is fixed at Record time, so it never learns that a run
+	// removed a path it held, or created a path it did not.
+	live map[string]struct{}
 }
 
 // Record wraps base and records every change under root, so a crash state can
@@ -94,6 +100,10 @@ func Record(base faultfs.FS, root string) *Recorder {
 		snap = tree{}
 	}
 	r.snap = snap
+	r.live = make(map[string]struct{}, len(snap))
+	for p := range snap {
+		r.live[p] = struct{}{}
+	}
 	return r
 }
 
@@ -140,14 +150,14 @@ func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.Fi
 	defer r.mu.Unlock()
 
 	p, _ := r.rel(name)
-	// existedBefore must run before the base call below: O_CREATE can bring p
-	// into existence, and a Stat taken after that call would see the effect of
-	// THIS call rather than what came before it. The lock spans both, and the
+	// exists must run before the base call below: O_CREATE can bring p into
+	// existence, and asking after that call would see the effect of THIS
+	// call rather than what came before it. The lock spans both, and the
 	// base call itself, so two callers opening the same new path cannot both
-	// see "did not exist" and both record a create. Read and Write already
+	// see "does not exist" and both record a create. Read and Write already
 	// hold their lock across the base call for the same reason; this is that
 	// same shape.
-	existed := r.existedBefore(p)
+	existed := r.exists(p)
 
 	f, err := r.base.OpenFile(name, flag, perm)
 	if err != nil {
@@ -178,6 +188,7 @@ func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.Fi
 	case flag&os.O_CREATE != 0 && !existed:
 		n := r.add(entry{k: kCreate, path: p})
 		r.origin[p] = n
+		r.live[p] = struct{}{}
 	default:
 		r.add(entry{k: kOpen, path: p})
 	}
@@ -185,25 +196,13 @@ func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.Fi
 	return &file{r: r, base: f, path: p, dir: isDir}, nil
 }
 
-// existedBefore reports whether p was present when the caller's operation
-// began. A path this run created is not durable until something depends on
-// its create entry; a path already on disk arrived from the snapshot and is
-// durable by construction, so nothing needs its creation.
-//
-// This answers from snap and origin, not from a live Stat: root can change
-// between the moment Record ran and the moment this call happens, and asking
-// the base directly would then answer for the wrong instant. snap alone is
-// not enough, because it is fixed at Record time and this run's own creates
-// happen after that: a path this run already created — origin holds an entry
-// for it — existed before a later call on the same path, even though it is
-// absent from snap. This is also what keeps two concurrent creates of the
-// same new path from both seeing "did not exist": the second one to acquire
-// r.mu finds the first one's origin entry.
-func (r *Recorder) existedBefore(p string) bool {
-	if _, ok := r.snap[p]; ok {
-		return true
-	}
-	_, ok := r.origin[p]
+// exists reports whether p is present right now, so an O_CREATE open records
+// a create only when it actually creates something. It answers from live,
+// not from snap: snap is fixed at Record time, and this run can both create
+// a path snap never held and remove a path snap did hold, so snap alone
+// answers for the wrong instant once the run has changed the namespace.
+func (r *Recorder) exists(p string) bool {
+	_, ok := r.live[p]
 	return ok
 }
 
@@ -213,6 +212,7 @@ func (r *Recorder) Remove(name string) error {
 	if ok {
 		r.add(entry{k: kRemove, path: p, needs: r.dependsOn(p)})
 		delete(r.origin, p)
+		delete(r.live, p)
 	}
 	r.mu.Unlock()
 	return r.base.Remove(name)
@@ -226,6 +226,8 @@ func (r *Recorder) Rename(oldname, newname string) error {
 		n := r.add(entry{k: kRename, path: from, to: to, needs: r.dependsOn(from)})
 		delete(r.origin, from)
 		r.origin[to] = n
+		delete(r.live, from)
+		r.live[to] = struct{}{}
 	}
 	r.mu.Unlock()
 	return r.base.Rename(oldname, newname)
@@ -245,6 +247,7 @@ func (r *Recorder) MkdirAll(name string, perm os.FileMode) error {
 	if p, ok := r.rel(name); ok {
 		n := r.add(entry{k: kMkdir, path: p})
 		r.origin[p] = n
+		r.live[p] = struct{}{}
 	}
 	r.mu.Unlock()
 	return r.base.MkdirAll(name, perm)
