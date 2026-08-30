@@ -2838,9 +2838,24 @@ func verdict(t *testing.T, save func(faultfs.FS, string, string) error, m crash.
 		t.Fatal(err)
 	}
 
+	// TWO saves, not one, and that is the whole discriminating power of this
+	// table.
+	//
+	// With a single save, "v1" is a legal answer -- the crash simply happened
+	// before the save completed -- so losing the rename is permitted and
+	// noDirSync SURVIVES the POSIX model. That would leave the one row able to
+	// catch MetadataDurable being read and ignored passing while proving
+	// nothing, which is a false negative and looks exactly like success.
+	//
+	// With two saves, v2's publication COMPLETED before v3 began, so a state
+	// that reads "v1" has reverted acknowledged data. That is a real defect and
+	// every store that has it fails here.
 	rec := crash.Record(faultfs.OS(), dir)
 	if err := save(rec, dir, "v2"); err != nil {
-		t.Fatalf("the scenario failed during recording: %v", err)
+		t.Fatalf("the first save failed during recording: %v", err)
+	}
+	if err := save(rec, dir, "v3"); err != nil {
+		t.Fatalf("the second save failed during recording: %v", err)
 	}
 
 	states, err := crash.States(rec, m)
@@ -2853,7 +2868,9 @@ func verdict(t *testing.T, save func(faultfs.FS, string, string) error, m crash.
 		if readErr != nil {
 			return false // the store did not reopen at all
 		}
-		if got != "v1" && got != "v2" {
+		// Never "v1": that is a reversion of data the store acknowledged.
+		// Never anything else: that is a part-written record.
+		if got != "v2" && got != "v3" {
 			return false
 		}
 	}
@@ -2989,6 +3006,10 @@ func record(t *testing.T, save func(faultfs.FS, string, string) error) (*crash.R
 	if err := save(rec, dir, "v2"); err != nil {
 		t.Fatalf("scenario: %v", err)
 	}
+	// ONE save here, deliberately, unlike the two in crash_test.go's verdict.
+	// These tests compare state SETS against each other and never judge whether
+	// a store is correct, so the second save would only enlarge the state space
+	// without discriminating anything.
 	return rec, dir
 }
 
