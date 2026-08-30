@@ -395,3 +395,22 @@ func TestTheRebuiltFilesystemRefusesANameOutsideTheRoot(t *testing.T) {
 		t.Errorf("the file outside the root now reads %q (%v), want %q untouched", b, err, "XX")
 	}
 }
+
+// A state name is a go test -run address, so two models that produce identical
+// states must address them identically. A sector larger than every write can
+// split nothing, so it must name what a whole-call model names.
+func TestAHugeSectorNamesTheSameStatesAsAWholeCallModel(t *testing.T) {
+	rec, _ := inPlace(t)
+
+	whole, err := crash.Plan(rec, crash.Model{Sector: 0})
+	if err != nil {
+		t.Fatalf("whole-call: %v", err)
+	}
+	huge, err := crash.Plan(rec, crash.Model{Sector: 1 << 20})
+	if err != nil {
+		t.Fatalf("huge sector: %v", err)
+	}
+	if !reflect.DeepEqual(whole, huge) {
+		t.Errorf("Sector 0 gave\n  %q\na 1 MiB sector gave\n  %q", whole, huge)
+	}
+}
