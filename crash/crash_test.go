@@ -19,20 +19,22 @@ import (
 // whole defect is the torn write -- would pass the table while proving
 // nothing.
 //
-// The three lengths are equal for a second reason. Recorder.OpenFile records
-// O_TRUNC as a plain open, so the replay does not model the size reset. A
-// value shorter than the one it replaces would leave the tail of the older
-// value behind, the replay control would refuse the whole record, and every
-// row would fail for a reason no store caused.
+// The three lengths are equal so that the torn write is the only way to reach a
+// value outside the pair. A shorter value would also leave the tail of the one
+// it replaced whenever a state lost the truncate, and that is a second defect
+// wearing the same clothes. Keeping the lengths equal makes each broken state
+// attributable to one cause.
 const (
 	v1 = "v1v1"
 	v2 = "v2v2"
 	v3 = "v3v3"
 )
 
-// maxReported bounds how many broken states one row prints. The first few name
-// the defect; the rest repeat it.
-const maxReported = 4
+// maxReported bounds how many broken states one row prints. The first several
+// name the defect, the rest repeat it, and the trailing count still states the
+// real scale. inPlaceStore breaks 36 states, so an uncapped list would bury the
+// three rows that break one or two.
+const maxReported = 8
 
 // breach is one candidate state that broke the invariant.
 //
@@ -82,16 +84,12 @@ func (b breach) String() string { return b.state + ": " + b.why }
 // reads v1 has reverted acknowledged data. State.Point is what lets the check
 // tell the two halves apart.
 //
-// # A known limit of that rule
-//
-// plan drops duplicate trees by fingerprint across ALL crash points, so one
-// tree reachable from two points arrives under the EARLIER one. The rule above
-// is therefore sound but not complete: it never calls a legal state a defect,
-// and it can miss an illegal one whose tree also appears earlier, where v1 is
-// still legal. The bias runs the safe way -- towards a missed finding and away
-// from a false positive on correct code -- and the reference table still fails
-// every store it must, because their reverting trees carry the second save's
-// temporary file and no early state does. See the task report.
+// The rule reads State.Point and needs it to be the crash point of THIS state,
+// not of some earlier state that rebuilt the same bytes. plan deduplicates
+// within one crash point and not across the walk, which is what makes that
+// true. Sharing the fingerprint set across the walk collapsed a late state
+// onto an early one, where v1 is still legal, and noDirSync/posix lost nine of
+// its ten reverting states to it.
 func survives(t *testing.T, save saveFunc, m crash.Model) (bool, []breach) {
 	t.Helper()
 
