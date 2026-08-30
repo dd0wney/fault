@@ -175,6 +175,23 @@
 // adapters: a method that calls Trip and ignores the answer keeps the pass
 // count exactly right, so counting passes never proves anything.
 //
+// Nothing about a path the scenario never sent through the seam. A store that
+// writes one file through the fs interface and another with a direct os call
+// produces a full record, a matching tree, and a green sweep that says nothing
+// at all about the second file.
+//
+// Two of the three guards here already cover part of that. A scenario that
+// changed nothing through the seam has no crash point and the plan is refused.
+// A bypass that adds or alters a name under the record root is caught by the
+// positive control, because the replayed tree and the written directory then
+// disagree.
+//
+// What is left is every bypass that leaves the recorded tree identical: one
+// that writes outside the record root, one that creates and removes a name
+// before the control looks, and one that rewrites a recorded path with the
+// bytes already there. All three were measured. Use [Recorder.Observed] to
+// assert that the file carrying the durability under test was actually served.
+//
 // Nothing useful, under the POSIX metadata rule, when the filesystem under test
 // cannot sync a directory. This is the sharpest of the four.
 //
