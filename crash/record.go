@@ -120,8 +120,8 @@ func (r *Recorder) failure() error {
 // rel converts an absolute or relative name into the slash-separated path the
 // record uses. A name outside root is a refusal, because it cannot be rebuilt.
 func (r *Recorder) rel(name string) (string, bool) {
-	p, err := filepath.Rel(r.root, name)
-	if err != nil || p == ".." || len(p) > 2 && p[:3] == ".."+string(filepath.Separator) {
+	p, ok := under(r.root, name)
+	if !ok {
 		r.fail(fmt.Errorf("crash: %q is outside the recorded root %q, so no crash state can be rebuilt for it", name, r.root))
 		return "", false
 	}
