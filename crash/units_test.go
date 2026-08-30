@@ -1,6 +1,10 @@
 package crash
 
-import "testing"
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func TestSectorZeroLosesAWholeWriteCall(t *testing.T) {
 	entries := []entry{{n: 1, k: kWrite, path: "a", data: make([]byte, 10000)}}
@@ -91,5 +95,76 @@ func TestSplitAtCrashOnlyOnlySplitsTheWriteAtTheCrash(t *testing.T) {
 	}
 	if forEntry2 != 3 {
 		t.Errorf("entry 2, at the crash point, produced %d units, want 3 split units", forEntry2)
+	}
+}
+
+// A write that never crosses a sector boundary was not split, so its unit must
+// be the whole one. Naming it ".s0" claims a granularity that did not apply,
+// and it gives Model{Sector: 0} and a sector larger than every write two
+// different names for one state. A state name is a go test -run address, so
+// two addresses for one state is a defect, not a cosmetic difference.
+func TestAWriteInsideOneSectorIsNotSplit(t *testing.T) {
+	entries := []entry{{n: 1, k: kWrite, path: "a", off: 0, data: make([]byte, 100)}}
+	got := units(entries, []int{1}, 1, Model{Sector: 4096})
+	if len(got) != 1 {
+		t.Fatalf("got %d units, want 1", len(got))
+	}
+	if !got[0].whole() {
+		t.Errorf("unit = %+v, want a whole unit — the write fits inside one sector", got[0])
+	}
+	if name := unitName(index(entries), got[0]); strings.Contains(name, ".s") {
+		t.Errorf("unitName = %q, want no sector suffix — the write was never split", name)
+	}
+}
+
+// A write that exactly fills its sector is the boundary case of the same rule.
+// It ends on a boundary without crossing one, so it is still one unit.
+func TestAWriteThatExactlyFillsOneSectorIsNotSplit(t *testing.T) {
+	entries := []entry{{n: 1, k: kWrite, path: "a", off: 0, data: make([]byte, 4096)}}
+	got := units(entries, []int{1}, 1, Model{Sector: 4096})
+	if len(got) != 1 {
+		t.Fatalf("got %d units, want 1", len(got))
+	}
+	if !got[0].whole() {
+		t.Errorf("unit = %+v, want a whole unit", got[0])
+	}
+}
+
+// Collapsing the single-unit case must not collapse a write that genuinely
+// crosses a boundary. 100 bytes at offset 4000 with sector 4096 lies partly in
+// sector 0 and partly in sector 1, and both units keep their suffixes.
+func TestAWriteThatStraddlesABoundaryKeepsBothSectors(t *testing.T) {
+	entries := []entry{{n: 1, k: kWrite, path: "a", off: 4000, data: make([]byte, 100)}}
+	got := units(entries, []int{1}, 1, Model{Sector: 4096})
+	if len(got) != 2 {
+		t.Fatalf("got %d units, want 2 — the write crosses a sector boundary", len(got))
+	}
+	if got[0].from != 0 || got[0].to != 96 || got[0].sect != 0 {
+		t.Errorf("unit 0 = %+v, want from 0, to 96, sect 0", got[0])
+	}
+	if got[1].from != 96 || got[1].to != 100 || got[1].sect != 1 {
+		t.Errorf("unit 1 = %+v, want from 96, to 100, sect 1", got[1])
+	}
+
+	byIndex := index(entries)
+	for i, want := range []string{".s0", ".s1"} {
+		if name := unitName(byIndex, got[i]); !strings.HasSuffix(name, want) {
+			t.Errorf("unitName(unit %d) = %q, want a %s suffix", i, name, want)
+		}
+	}
+}
+
+// The property the collapse exists for. A sector larger than every write can
+// split nothing, so it must give the same units as a whole-call model -- the
+// same ranges, the same sector numbers, and therefore the same names.
+func TestAHugeSectorGivesTheSameUnitsAsAWholeCallModel(t *testing.T) {
+	entries := []entry{
+		{n: 1, k: kCreate, path: "a"},
+		{n: 2, k: kWrite, path: "a", off: 0, data: make([]byte, 100)},
+	}
+	whole := units(entries, []int{1, 2}, 2, Model{Sector: 0})
+	huge := units(entries, []int{1, 2}, 2, Model{Sector: 1 << 20})
+	if !reflect.DeepEqual(whole, huge) {
+		t.Errorf("Sector 0 gave %+v, a 1 MiB sector gave %+v", whole, huge)
 	}
 }

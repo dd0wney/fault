@@ -122,6 +122,14 @@ func units(entries []entry, pending []int, k int, m Model) []unit {
 // sect is the loop counter i, carried rather than computed from from and to:
 // the last sector of a write is usually short, so from/(to-from) names it
 // wrongly. See units_test.go for the case this guards.
+//
+// A write that never crosses a boundary comes back as ONE WHOLE unit rather
+// than as sector 0 of one, because no split happened. Naming it ".s0" would
+// claim a granularity that did not apply, and it would give two models that
+// produce identical states two different names: Model{Sector: 0} would address
+// a state as "lost=a:write1" while a sector larger than every write addressed
+// the same state as "lost=a:write1.s0". A state name is a go test -run
+// address, so that is a real difference and not a cosmetic one.
 func sectorsOf(e entry, sector int64) []unit {
 	start := e.off
 	end := e.off + int64(len(e.data))
@@ -134,6 +142,9 @@ func sectorsOf(e entry, sector int64) []unit {
 		}
 		out = append(out, unit{entry: e.n, from: at - start, to: next - start, sect: i})
 		at = next
+	}
+	if len(out) == 1 {
+		return []unit{{entry: e.n}}
 	}
 	return out
 }
