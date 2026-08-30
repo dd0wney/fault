@@ -205,7 +205,11 @@ func (c *conn) Begin() (driver.Tx, error) {
 	if c.f.trip() {
 		return nil, ErrInjected
 	}
-	return c.base.Begin()
+	// staticcheck SA1019 is correct that driver.Conn.Begin is deprecated, and
+	// it is not actionable here. driver.Conn REQUIRES the method, so an
+	// implementation must provide it and a wrapper must forward to the base's
+	// version of it. ConnBeginTx is additional, not a replacement.
+	return c.base.Begin() //nolint:staticcheck // driver.Conn requires Begin; a wrapper must forward it
 }
 
 // trip counts one operation under the lock.

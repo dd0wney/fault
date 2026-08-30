@@ -178,9 +178,9 @@ func TestTheWrapperForwardsWhatTheBaseImplements(t *testing.T) {
 		"ConnPrepareContext": reflect.TypeOf((*driver.ConnPrepareContext)(nil)).Elem(),
 		"ConnBeginTx":        reflect.TypeOf((*driver.ConnBeginTx)(nil)).Elem(),
 		"QueryerContext":     reflect.TypeOf((*driver.QueryerContext)(nil)).Elem(),
-		"Queryer":            reflect.TypeOf((*driver.Queryer)(nil)).Elem(),
+		"Queryer":            reflect.TypeOf((*driver.Queryer)(nil)).Elem(), //nolint:staticcheck // deprecated, and database/sql still type-asserts for it at sql.go:1780
 		"ExecerContext":      reflect.TypeOf((*driver.ExecerContext)(nil)).Elem(),
-		"Execer":             reflect.TypeOf((*driver.Execer)(nil)).Elem(),
+		"Execer":             reflect.TypeOf((*driver.Execer)(nil)).Elem(), //nolint:staticcheck // deprecated, and database/sql still type-asserts for it at sql.go:1708
 		"Pinger":             reflect.TypeOf((*driver.Pinger)(nil)).Elem(),
 		"SessionResetter":    reflect.TypeOf((*driver.SessionResetter)(nil)).Elem(),
 		"Validator":          reflect.TypeOf((*driver.Validator)(nil)).Elem(),
@@ -305,7 +305,7 @@ func TestBeginFailsAtTheArmedOperation(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		tx, beginErr := c.Begin() // operation 2
+		tx, beginErr := c.Begin() //nolint:staticcheck // driver.Conn requires Begin, so the wrapper is tested through it
 		_ = c.Close()
 
 		if n != 2 {
