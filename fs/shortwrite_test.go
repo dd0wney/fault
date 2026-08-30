@@ -175,7 +175,9 @@ func TestAShortWriteHasTheShapeOfARealOne(t *testing.T) {
 type writeFailFS struct{ err error }
 
 func (w writeFailFS) OpenFile(string, int, os.FileMode) (faultfs.File, error) {
-	return writeFailFile{err: w.err}, nil
+	// Both types carry the same single err field, so the conversion says what
+	// the struct literal said. staticcheck S1016 asks for it.
+	return writeFailFile(w), nil
 }
 func (writeFailFS) Remove(string) error                   { return nil }
 func (writeFailFS) Rename(string, string) error           { return nil }
