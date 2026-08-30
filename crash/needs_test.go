@@ -21,6 +21,10 @@ func TestAWriteNeedsTheCreateOfItsFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	// Windows cannot delete a file that still has an open handle, so an
+	// unclosed handle here makes t.TempDir cleanup fail there and pass on
+	// POSIX. The package is fine; the test was not portable.
+	defer func() { _ = f.Close() }()
 	if _, err := f.Write([]byte("x")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -74,6 +78,10 @@ func TestAPreExistingFileHasNoDependency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	// Windows cannot delete a file that still has an open handle, so an
+	// unclosed handle here makes t.TempDir cleanup fail there and pass on
+	// POSIX. The package is fine; the test was not portable.
+	defer func() { _ = f.Close() }()
 	if _, err := f.Write([]byte("v2")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -105,6 +113,10 @@ func TestOCreateOnAFileThatAlreadyExistsRecordsNoCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	// Windows cannot delete a file that still has an open handle, so an
+	// unclosed handle here makes t.TempDir cleanup fail there and pass on
+	// POSIX. The package is fine; the test was not portable.
+	defer func() { _ = f.Close() }()
 	for _, e := range crash.Entries(rec) {
 		if e.Kind == "create" {
 			t.Fatalf("recorded a create entry for a path that predates Record: %+v", e)
@@ -144,6 +156,10 @@ func TestRemoveThenRecreateOfASnapshotPathRecordsACreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	// Windows cannot delete a file that still has an open handle, so an
+	// unclosed handle here makes t.TempDir cleanup fail there and pass on
+	// POSIX. The package is fine; the test was not portable.
+	defer func() { _ = f.Close() }()
 
 	entries := crash.Entries(rec)
 	createIdx := -1
