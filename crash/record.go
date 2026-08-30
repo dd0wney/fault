@@ -193,6 +193,22 @@ func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.Fi
 		r.add(entry{k: kOpen, path: p})
 	}
 
+	// O_TRUNC resets the size of a file the open did not create, and it does so
+	// before the caller writes a byte. Recording it as a truncate to 0 is what
+	// lets the replay model a publish that overwrites a long value with a short
+	// one. Without the entry the replay keeps the tail of the older value, the
+	// replay control refuses the whole record, and the sweep cannot describe
+	// the run at all.
+	//
+	// A path this open created is already empty, so no entry describes it, and
+	// a second entry there would give the file two origins.
+	//
+	// It carries a dependency for the same reason every other truncate does: a
+	// crash that loses the create of the file loses this operation on it too.
+	if flag&os.O_TRUNC != 0 && existed {
+		r.add(entry{k: kTruncate, path: p, size: 0, needs: r.dependsOn(p)})
+	}
+
 	return &file{r: r, base: f, path: p, dir: isDir}, nil
 }
 

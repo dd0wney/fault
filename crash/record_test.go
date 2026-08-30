@@ -290,3 +290,54 @@ func findEntry(t *testing.T, entries []crash.Entry, kind string) crash.Entry {
 	t.Fatalf("no %s entry recorded", kind)
 	return crash.Entry{}
 }
+
+// O_TRUNC on a file that already exists resets its size, and the record has to
+// say so.
+//
+// Without a truncate entry the replay keeps the tail of the older, longer
+// value. The replay control then refuses the whole record, so "open, truncate,
+// rewrite" -- a publish idiom as common as the temporary file and the rename
+// -- cannot be swept at all, and the only way past it is to give every fixture
+// values of one length, which hides the gap from everyone else.
+func TestOTruncOnAnExistingFileIsRecordedAsATruncate(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "data")
+	if err := os.WriteFile(name, []byte("the-older-longer-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := crash.Record(faultfs.OS(), dir)
+	f, err := rec.OpenFile(name, os.O_RDWR|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// plan runs the replay control before it builds anything, so an unmodelled
+	// O_TRUNC arrives here as the control's diagnostic rather than as a state.
+	states, err := crash.States(rec, crash.Model{})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	findEntry(t, crash.Entries(rec), "truncate")
+
+	// The state that lost nothing at the last crash point is the whole replay.
+	const want = "after=data:write1/lost=none"
+	var got []string
+	for _, s := range states {
+		got = append(got, s.Name)
+		if s.Name != want {
+			continue
+		}
+		if v := readAll(t, s.FS(t), name); v != "new" {
+			t.Fatalf("the replayed tree holds %q, want %q — the tail of the older value outlived the truncate", v, "new")
+		}
+		return
+	}
+	t.Fatalf("no state is named %q; plan gave %q", want, got)
+}
