@@ -1,6 +1,8 @@
 package fs
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"syscall"
 
@@ -191,6 +193,125 @@ func (f *faultFile) Write(b []byte) (int, error) {
 		return n, baseErr
 	}
 	return n, f.failWith("write", syscall.ENOSPC)
+}
+
+// Seek and WriteAt are OPTIONAL capabilities, discovered at run time.
+//
+// fs.File carries neither, and it does not gain them: its five methods are the
+// contract, and a small contract is what lets this package argue for a place in
+// the standard library. So the WRAPPER offers both unconditionally and refuses
+// at call time when the base cannot serve them, exactly as a consumer of io
+// asserts for io.ReaderFrom rather than requiring it.
+//
+// A caller reaches them by type assertion:
+//
+//	if s, ok := file.(interface{ Seek(int64, int) (int64, error) }); ok {
+//		off, err := s.Seek(0, io.SeekStart)
+//	}
+//
+// Both are fault points. An operation a sweep cannot fail is a silent hole in
+// the injection, and contract rule 3 forbids one.
+
+// errUnsupported builds the refusal for a base that cannot perform op.
+//
+// It wraps errors.ErrUnsupported, which is not decoration. The Go
+// documentation for that sentinel is prescriptive: a method "should instead
+// return an error including appropriate context that satisfies
+// errors.Is(err, errors.ErrUnsupported)". A package-local sentinel alone leaves
+// the reflex idiom returning false, so a caller concludes the operation
+// succeeded. That defect was found in a downstream adapter on 2026-08-30 and
+// is not repeated here.
+func (f *faultFile) errUnsupported(op string) error {
+	return &os.PathError{
+		Op:   op,
+		Path: f.name,
+		Err:  fmt.Errorf("the underlying file cannot %s: %w", op, errors.ErrUnsupported),
+	}
+}
+
+// Seek moves the read and write position, when the base can.
+//
+// TODO(§12): the body.
+//
+// The shape, and the three decisions it carries:
+//
+//  1. Ask the base for the capability FIRST, before Trip. A base that cannot
+//     seek must refuse identically whether or not this pass armed the point,
+//     or the sweep's arming changes the answer to "can you do this at all".
+//  2. Then Trip, and on true return f.fail("seek") — the injected EIO, like
+//     every other operation here.
+//  3. Otherwise delegate and return what the base returns UNCHANGED. The
+//     result is the new absolute offset, and a caller and a recorder both
+//     depend on that being the base's own answer rather than arithmetic.
+func (f *faultFile) Seek(offset int64, whence int) (int64, error) {
+	// The capability question is asked BEFORE Trip, on purpose. A base that
+	// cannot seek must answer the same way whether or not this pass armed the
+	// point, or the sweep's arming would change what the file can do rather
+	// than only whether it succeeds.
+	s, ok := f.base.(interface {
+		Seek(offset int64, whence int) (int64, error)
+	})
+	if !ok {
+		return 0, f.errUnsupported("seek")
+	}
+	if f.p.Trip() {
+		return 0, f.fail("seek")
+	}
+	// Returned unchanged. The result is the new offset relative to the start
+	// of the file, and both a caller and a recorder depend on that being the
+	// base's own answer rather than arithmetic this package performed.
+	return s.Seek(offset, whence)
+}
+
+// WriteAt writes at an absolute offset, when the base can, without moving the
+// file position.
+//
+// TODO(§12): the body.
+//
+// The shape, and the four decisions it carries:
+//
+//  1. Capability first, as in Seek.
+//  2. Trip. On false, delegate unchanged.
+//  3. On true under New: fail whole. No bytes move, and it reports EIO.
+//  4. On true under NewShortWrite: move HALF the buffer AT off, for real, then
+//     report ENOSPC — the same rule Write follows, at the given offset. A
+//     header backpatched half-way is precisely the torn state this exists to
+//     produce, and it is the case a real SSTable writer hits.
+//
+// Note what does NOT happen: the file position is untouched either way.
+// WriteAt carries its own offset, which is why it costs the recorder nothing.
+func (f *faultFile) WriteAt(b []byte, off int64) (int, error) {
+	w, ok := f.base.(interface {
+		WriteAt(p []byte, off int64) (int, error)
+	})
+	if !ok {
+		return 0, f.errUnsupported("writeat")
+	}
+	if !f.p.Trip() {
+		return w.WriteAt(b, off)
+	}
+	if !f.shortWrite {
+		return 0, f.fail("writeat")
+	}
+
+	// Half the buffer, at the offset the caller gave. The same rule Write
+	// follows, and for the same reason: a record whose header says N bytes and
+	// whose body holds fewer is the state a caller must survive, and half is
+	// the most representative shape of one.
+	//
+	// This form matters more here than it does for Write. A store that
+	// backpatches a header by writing at offset 0 after writing the body puts
+	// its most important bytes through exactly this call, and a half-written
+	// header is the state that reads as valid and is not.
+	n, baseErr := w.WriteAt(b[:len(b)/2], off)
+	if baseErr != nil {
+		// The world said no partway through, and its answer outranks the one
+		// this package chose. Reporting ENOSPC here would send a caller to
+		// free space on a disk that was never full, and reporting the injected
+		// count would claim bytes that never landed.
+		return n, baseErr
+	}
+	return n, f.failWith("writeat", syscall.ENOSPC)
 }
 
 func (f *faultFile) Sync() error {
