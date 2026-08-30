@@ -167,3 +167,92 @@ func TestRemoveThenRecreateOfASnapshotPathRecordsACreate(t *testing.T) {
 		t.Errorf("the write needs %v, want [%d] — the recreate", write, wantN)
 	}
 }
+
+// A create needs the mkdir of the directory that holds the name, when this run
+// made that directory. Without the dependency the walk built
+// after=d|a:create1/lost=d:mkdir1, which keeps a file inside a directory whose
+// creation was lost. writeTo re-creates the parent, so no check can tell that
+// state from lost=none, and the name asserts something untrue. The state is
+// illegal under section 6.1 of the design.
+func TestACreateNeedsTheMkdirOfItsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(faultfs.OS(), dir)
+
+	if err := rec.MkdirAll(filepath.Join(dir, "d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := rec.OpenFile(filepath.Join(dir, "d", "a"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	needs := crash.Needs(rec)
+	// 1 mkdir d, 2 create d/a, 3 close
+	if len(needs) < 2 {
+		t.Fatalf("got %d entries, want at least 2", len(needs))
+	}
+	if len(needs[1]) != 1 || needs[1][0] != 1 {
+		t.Errorf("the create of d/a needs %v, want [1] — the mkdir of d", needs[1])
+	}
+
+	// The consequence, measured on the state itself. The name survives, because
+	// the walk still chooses that lost set; what must change is the tree it
+	// rebuilds. writeTo re-creates a missing parent, so the file is the only
+	// thing a check can observe, and before the fix it was there.
+	states, err := crash.States(rec, crash.Model{})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	const name = "after=d|a:create1/lost=d:mkdir1"
+	for _, s := range states {
+		if s.Name != name {
+			continue
+		}
+		h, err := s.FS(t).OpenFile(filepath.Join(dir, "d", "a"), os.O_RDONLY, 0)
+		if err == nil {
+			_ = h.Close()
+			t.Fatalf("state %q holds d/a inside a directory whose creation was lost", name)
+		}
+		return
+	}
+	t.Fatalf("no state is named %q, so this test measured nothing", name)
+}
+
+// A rename INTO a directory this run made needs that mkdir for the same reason
+// a create does. The reviewer named create and mkdir; a rename places a name in
+// a directory too, so leaving it out would keep one instance of the same
+// illegal state.
+func TestARenameNeedsTheMkdirOfItsTargetDirectory(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(faultfs.OS(), dir)
+
+	f, err := rec.OpenFile(filepath.Join(dir, "tmp"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.MkdirAll(filepath.Join(dir, "d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Rename(filepath.Join(dir, "tmp"), filepath.Join(dir, "d", "data")); err != nil {
+		t.Fatal(err)
+	}
+
+	needs := crash.Needs(rec)
+	// 1 create tmp, 2 close, 3 mkdir d, 4 rename tmp -> d/data
+	if len(needs) < 4 {
+		t.Fatalf("got %d entries, want at least 4", len(needs))
+	}
+	got := map[int]bool{}
+	for _, n := range needs[3] {
+		got[n] = true
+	}
+	if !got[1] || !got[3] || len(got) != 2 {
+		t.Errorf("the rename needs %v, want the create of tmp (1) and the mkdir of d (3)", needs[3])
+	}
+}
