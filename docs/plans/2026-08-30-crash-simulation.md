@@ -357,14 +357,11 @@ type Recorder struct {
 // Record wraps base and records every change under root, so a crash state can
 // be rebuilt.
 //
-// It takes the initial snapshot of root, which serves two purposes: the
-// replay starts from it, and a test can therefore build its initial state
-// BEFORE recording, so that setup is durable by construction and never enters
-// the crash space.
+// Task 4 adds the initial snapshot and extends this comment to say why it is
+// taken. Until then this describes only what it does, because a comment that
+// promises absent behaviour is a defect.
 func Record(base faultfs.FS, root string) *Recorder {
-	r := &Recorder{base: base, root: root, origin: map[string]int{}}
-	// Task 4 fills in the snapshot. Recording works without it.
-	return r
+	return &Recorder{base: base, root: root, origin: map[string]int{}}
 }
 
 // failure reports the first refusal, or nil. Run turns it into t.Fatal. It is
@@ -1054,7 +1051,7 @@ git commit -m "feat(crash): the snapshot the replay starts from, and a diff that
 
 **Interfaces:**
 - Consumes: `tree`, `node`, `entry`, `kind` from Tasks 2 and 4.
-- Produces: `func replay(snap tree, entries []entry, present map[int]bool) (tree, error)` — `present` names the entry indexes that reached the disk. An entry absent from `present` did not happen.
+- Produces: `func replay(snap tree, entries []entry, present map[int]bool, lost map[int][]unit) (tree, error)` — `present` names the entry indexes that reached the disk, and `lost` names the byte ranges of a write that did not. An entry absent from `present` did not happen at all. A range in `lost` leaves whatever the replay already had at those bytes, which is the truthful model and NOT zeroes.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1075,7 +1072,7 @@ func TestReplayAppliesEachKindOfEntry(t *testing.T) {
 	}
 	all := map[int]bool{1: true, 2: true, 3: true, 4: true, 5: true}
 
-	got, err := replay(tree{}, entries, all)
+	got, err := replay(tree{}, entries, all, nil)
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -1097,7 +1094,7 @@ func TestReplayZeroFillsAGap(t *testing.T) {
 		{n: 1, k: kCreate, path: "a"},
 		{n: 2, k: kWrite, path: "a", off: 3, data: []byte("z")},
 	}
-	got, err := replay(tree{}, entries, map[int]bool{1: true, 2: true})
+	got, err := replay(tree{}, entries, map[int]bool{1: true, 2: true}, nil)
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -1113,7 +1110,7 @@ func TestReplaySkipsAnAbsentEntry(t *testing.T) {
 		{n: 1, k: kCreate, path: "a"},
 		{n: 2, k: kWrite, path: "a", off: 0, data: []byte("hello")},
 	}
-	got, err := replay(tree{}, entries, map[int]bool{1: true})
+	got, err := replay(tree{}, entries, map[int]bool{1: true}, nil)
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -1144,7 +1141,7 @@ import "fmt"
 // present write into the same name -- but replay still refuses that pairing
 // rather than inventing a file, because a silent invention here would make the
 // generator's defect look like the store's.
-func replay(snap tree, entries []entry, present map[int]bool) (tree, error) {
+func replay(snap tree, entries []entry, present map[int]bool, lost map[int][]unit) (tree, error) {
 	out := snap.clone()
 	for _, e := range entries {
 		if !present[e.n] || !e.k.mutates() {
@@ -1162,7 +1159,16 @@ func replay(snap tree, entries []entry, present map[int]bool) (tree, error) {
 			if !ok {
 				return nil, fmt.Errorf("crash: entry %d writes to %q, which no present entry created", e.n, e.path)
 			}
-			n.data = writeAt(n.data, e.off, e.data)
+			// Only the ranges that reached the disk are applied. A lost range
+			// is NOT zeroed: it keeps whatever the replay already had there,
+			// which for a backpatched header is the placeholder the same run
+			// wrote earlier. Zeroing would invent a state the store can never
+			// see -- graphdb's SSTable header zeroes to IndexOffset = 0, which
+			// is structurally valid, so the reader would parse the body as an
+			// index and fail in a way it never fails in reality.
+			for _, r := range presentRanges(int64(len(e.data)), lost[e.n]) {
+				n.data = writeAt(n.data, e.off+r.from, e.data[r.from:r.to])
+			}
 			out[e.path] = n
 		case kTruncate:
 			n, ok := out[e.path]
@@ -1183,6 +1189,34 @@ func replay(snap tree, entries []entry, present map[int]bool) (tree, error) {
 		}
 	}
 	return out, nil
+}
+
+// presentRanges returns the complement of the lost ranges within [0, size), in
+// order. It is what turns "these sectors did not land" into "these sectors
+// did", which is the only form replay can apply.
+func presentRanges(size int64, lost []unit) []unit {
+	if len(lost) == 0 {
+		return []unit{{from: 0, to: size}}
+	}
+	gone := make([]bool, size)
+	for _, u := range lost {
+		for i := u.from; i < u.to && i < size; i++ {
+			gone[i] = true
+		}
+	}
+	var out []unit
+	for i := int64(0); i < size; i++ {
+		if gone[i] {
+			continue
+		}
+		j := i
+		for j < size && !gone[j] {
+			j++
+		}
+		out = append(out, unit{from: i, to: j})
+		i = j
+	}
+	return out
 }
 
 // writeAt places data at off, growing the file and zero-filling any gap, which
@@ -1334,7 +1368,7 @@ func (r *Recorder) checkReplay() error {
 		present[e.n] = true
 	}
 
-	got, err := replay(snap, entries, present)
+	got, err := replay(snap, entries, present, nil)
 	if err != nil {
 		return fmt.Errorf("crash: the replay of the whole record failed, so no state it builds can be trusted: %w", err)
 	}
@@ -1660,6 +1694,11 @@ type unit struct {
 	entry int
 	from  int64
 	to    int64
+	// sect is which sector of the write this is, from 0. It is carried rather
+	// than derived, because the last sector of a write is usually short and
+	// from/(to-from) then names it wrongly: a 10000 byte write at sector 4096
+	// ends with from=8192, to=10000, and 8192/1808 is 4 rather than 2.
+	sect int
 }
 
 // whole reports whether this unit covers its entry entirely.
@@ -1700,12 +1739,12 @@ func sectorsOf(e entry, sector int64) []unit {
 	end := e.off + int64(len(e.data))
 
 	var out []unit
-	for at := start; at < end; {
+	for at, i := start, 0; at < end; i++ {
 		next := (at/sector + 1) * sector
 		if next > end {
 			next = end
 		}
-		out = append(out, unit{entry: e.n, from: at - start, to: next - start})
+		out = append(out, unit{entry: e.n, from: at - start, to: next - start, sect: i})
 		at = next
 	}
 	return out
@@ -2073,7 +2112,7 @@ func TestASectorUnitCarriesItsIndex(t *testing.T) {
 	entries := []entry{{n: 1, k: kWrite, path: "a", off: 0, data: make([]byte, 8192)}}
 	byIndex := index(entries)
 
-	got := unitName(byIndex, unit{entry: 1, from: 4096, to: 8192})
+	got := unitName(byIndex, unit{entry: 1, from: 4096, to: 8192, sect: 1})
 	if !strings.HasSuffix(got, ".s1") {
 		t.Errorf("unitName = %q, want a .s1 suffix for the second sector", got)
 	}
@@ -2205,7 +2244,7 @@ func unitName(byIndex map[int]entry, u unit) string {
 	if !u.whole() {
 		// The sector index within the write, not within the file, because the
 		// write is what the name already identifies.
-		name += fmt.Sprintf(".s%d", u.from/max64(u.to-u.from, 1))
+		name += fmt.Sprintf(".s%d", u.sect)
 	}
 	return name
 }
@@ -2216,13 +2255,6 @@ func unitName(byIndex map[int]entry, u unit) string {
 func safe(p string) string {
 	p = strings.ReplaceAll(p, "/", "|")
 	return strings.ReplaceAll(p, " ", "_")
-}
-
-func max64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // stateName names the set of units a state lost.
@@ -2489,7 +2521,7 @@ func plan(r *Recorder, m Model) ([]state, error) {
 			}
 
 			keep = closure(entries, keep)
-			built, err := replay(snap, trim(entries, partial), keep)
+			built, err := replay(snap, entries, keep, partial)
 			if err != nil {
 				return nil, err
 			}
@@ -2518,33 +2550,6 @@ func plan(r *Recorder, m Model) ([]state, error) {
 		return out[i].name < out[j].name
 	})
 	return out, nil
-}
-
-// trim removes the byte ranges a partial loss took out of a write, so the
-// replay applies only what reached the disk.
-func trim(entries []entry, partial map[int][]unit) []entry {
-	if len(partial) == 0 {
-		return entries
-	}
-	out := make([]entry, len(entries))
-	copy(out, entries)
-	for i := range out {
-		lost, ok := partial[out[i].n]
-		if !ok {
-			continue
-		}
-		data := append([]byte(nil), out[i].data...)
-		// A lost sector leaves what was there before, which for a new file is
-		// zero. Modelling it as zero rather than as absent keeps the offsets
-		// of every later byte correct.
-		for _, u := range lost {
-			for b := u.from; b < u.to && int(b) < len(data); b++ {
-				data[b] = 0
-			}
-		}
-		out[i].data = data
-	}
-	return out
 }
 
 // Run rebuilds every state the model allows and runs check on each, one
@@ -3214,4 +3219,8 @@ Do not report CI from the local gates. They were all green while Windows was red
 
 **Type consistency.** `unit{entry, from, to}` is used with those field names in Tasks 8-12. `entry{n, k, path, to, off, size, data, dir, needs}` is used with those names in Tasks 2-12. `tree` and `node` in Tasks 4, 5, 9, 12. `Model`'s four fields keep the spec's names throughout.
 
-**Known gap, recorded rather than hidden.** Task 12's `trim` models a lost sector as zeroes rather than as "whatever was there before". That is correct for a newly created file and wrong for an overwrite of an existing one, where the old bytes would remain. Task 15 must state this in `doc.go` as a limit, or a follow-up task must fix it by reading the prior content out of the state being built. **Raise this with the user before starting Task 12** — it is a modelling decision, not an implementation detail.
+**A gap that was found and then closed, recorded because the reasoning matters.** An earlier draft of Task 12 modelled a lost sector as zeroes. The graphdb session supplied the counter-example on 2026-08-30: `pkg/lsm/sstable_create.go:137` seeks to 0 and backpatches an SSTable header, so a lost sector there must keep the placeholder the same run wrote earlier. Zeroes would give `IndexOffset = 0`, which is structurally valid, so the reader would parse the body as an index and fail in a way it never fails in reality.
+
+The fix removed a function rather than adding one. `replay` now applies only the ranges that landed, so a lost range simply keeps whatever was already there. No new information is needed, because the earlier write is already in the record.
+
+**A genuine limit remains, and Task 15 must document it.** A lost sector of a write into a file that existed *before* `Record` was called keeps the snapshot's bytes, which is correct. There is no case left where the model invents content.
