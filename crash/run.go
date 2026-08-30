@@ -14,6 +14,10 @@ import (
 
 var errNoMutations = errors.New("crash: the scenario changed nothing, so there is no crash point and the sweep proved nothing")
 
+// errNoStates is errNoMutations for a record that HAS a crash point. Reaching
+// it means the walk itself stopped producing, which no scenario can cause.
+var errNoStates = errors.New("crash: the record has a crash point but the walk built no state, so the sweep would assert nothing")
+
 // state is one candidate directory, with the name that identifies it.
 type state struct {
 	point  int
@@ -109,10 +113,28 @@ func plan(r *Recorder, m Model) ([]state, error) {
 		}
 	}
 
-	// A stable order, because Go randomises map iteration and -run must match
-	// the same name on every run. Sorting here also makes the order independent
-	// of how subsets happens to enumerate, so a change there cannot silently
-	// move a name a developer has written down.
+	// Unreachable today: points is not empty, so there is at least one crash
+	// point; subsets returns at least one lost set for any unit count; and the
+	// first fingerprint cannot already be in an empty seen map. The guard stays
+	// because "unreachable" is a property of today's code that no test
+	// protects, and the shape it guards -- returning normally having asserted
+	// nothing -- is the exact failure the first refusal exists to prevent. It
+	// lives here rather than in Run so that Plan refuses too: a subset property
+	// asserted over an empty state list is true for free.
+	if len(out) == 0 {
+		return nil, errNoStates
+	}
+
+	// A stable order, because go test -run must match the same name on every
+	// run.
+	//
+	// Nothing upstream is map-ordered today, so what this sort actually buys is
+	// independence from how subsets enumerates: a change there cannot silently
+	// move a name a developer has written down. It also stands between a future
+	// map on this path and an unreproducible name, which is what Go's
+	// randomised map iteration would otherwise produce. Both halves were
+	// measured, not assumed: a map placed before this sort leaves the order
+	// intact, and the same map placed after it does not.
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].point != out[j].point {
 			return out[i].point < out[j].point

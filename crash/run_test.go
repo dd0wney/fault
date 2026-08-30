@@ -414,3 +414,49 @@ func TestAHugeSectorNamesTheSameStatesAsAWholeCallModel(t *testing.T) {
 		t.Errorf("Sector 0 gave\n  %q\na 1 MiB sector gave\n  %q", whole, huge)
 	}
 }
+
+// The replay control must run BEFORE any state is built, and nothing pinned
+// that. The code order was right, so moving the control after the state loop
+// left the whole suite green: no fictional state escapes either way. What
+// escapes is the work — up to 4096 replays for each crash point, spent before a
+// refusal that was already certain.
+//
+// This record fails BOTH checks, with different diagnostics. It is damaged, so
+// the control fails, and it carries fourteen pending units at the second crash
+// point, so an exhaustive walk passes the state cap. Whichever check runs first
+// names itself in the error.
+func TestTheReplayControlRunsBeforeTheStateWalkNotAfterIt(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(faultfs.OS(), dir)
+
+	name := filepath.Join(dir, "data")
+	f, err := rec.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One create plus thirteen one-byte sectors is fourteen pending units, so
+	// an exhaustive walk wants 16384 states and refuses.
+	if _, err := f.Write([]byte("0123456789abc")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Not through rec, so the record never learns of it and the whole-record
+	// replay stops matching the disk.
+	if err := os.WriteFile(name, []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = crash.Plan(rec, crash.Model{Sector: 1})
+	if err == nil {
+		t.Fatal("plan accepted a record that fails both the control and the state cap")
+	}
+	if errors.Is(err, crash.ErrTooManyStates) {
+		t.Fatalf("plan returned the state cap refusal (%v), so it walked the states before it ran the control", err)
+	}
+	if !strings.Contains(err.Error(), "did not reproduce the directory") {
+		t.Fatalf("plan returned %v, want the replay control's diagnostic", err)
+	}
+}
