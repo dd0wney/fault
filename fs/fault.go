@@ -4,12 +4,22 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 
 	"github.com/dd0wney/fault"
 )
 
-type faultFS struct {
+// Fault is an FS that fails one operation and counts what it hands out.
+//
+// New returns this concrete type rather than the FS interface, for the same
+// reason alloc.New does: Outstanding is not part of FS and a caller needs it.
+// Widening FS instead would break every external implementation to serve a
+// method only the wrapper can answer.
+type Fault struct {
+	mu          sync.Mutex
+	outstanding int // handles handed out and not yet returned
+
 	p    *fault.Points
 	base FS
 	err  error // the errno every injected failure reports
@@ -28,7 +38,7 @@ type faultFS struct {
 // around. A logical error -- ENOENT from an open, EEXIST from a mkdir -- is not
 // a fault: a correct store responds to those by succeeding at what it was
 // trying to do, so injecting one tests a different path than the one intended.
-func New(p *fault.Points, base FS) FS { return &faultFS{p: p, base: base, err: syscall.EIO} }
+func New(p *fault.Points, base FS) *Fault { return &Fault{p: p, base: base, err: syscall.EIO} }
 
 // NewShortWrite returns an FS whose failing write is a SHORT write: it moves
 // the first half of the buffer for real, then reports ENOSPC.
@@ -49,8 +59,35 @@ func New(p *fault.Points, base FS) FS { return &faultFS{p: p, base: base, err: s
 // it is an exception for a different reason. Close leaves an effect because
 // POSIX forces it. A short write leaves an effect because the effect is the
 // point: the torn record on disk is the state the caller must survive.
-func NewShortWrite(p *fault.Points, base FS) FS {
-	return &faultFS{p: p, base: base, err: syscall.EIO, shortWrite: true}
+func NewShortWrite(p *fault.Points, base FS) *Fault {
+	return &Fault{p: p, base: base, err: syscall.EIO, shortWrite: true}
+}
+
+// Outstanding reports how many handles have been opened and not closed.
+//
+// This is the second of the three assertions a fault-injection loop needs: the
+// operation failed, nothing leaked, the state is still valid. Drop it and every
+// unwind path in the code under test can leak a descriptor while the sweep
+// still reports a clean walk. CERT names the class FIO42-C, and it is violated
+// almost exclusively on error paths, because the happy path closes.
+//
+// Two rules make the count truthful, and both are the opposite of the naive
+// reading:
+//
+//   - A FAILED open counts nothing. It handed nothing out, so counting it would
+//     report a leak on every pass that fails an open, which is most of them.
+//   - A FAILED close still DECREMENTS. POSIX releases the descriptor whether or
+//     not close(2) reports an error, and this package's Close closes the real
+//     handle either way. Counting it as still held would report a leak the code
+//     under test has no way to avoid.
+//
+// The author of this package needed both rules explained to him by his own
+// tests failing on Windows, where four handles left open by its own test suite
+// blocked a temporary directory from being removed.
+func (f *Fault) Outstanding() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.outstanding
 }
 
 // OpenFile is the only method that returns another interface, and so the only
@@ -63,7 +100,7 @@ func NewShortWrite(p *fault.Points, base FS) FS {
 // is a fault this package chose. An error from base is the world saying no, and
 // it passes through untouched: the code under test has to see what the
 // filesystem actually said.
-func (f *faultFS) OpenFile(name string, flag int, perm os.FileMode) (File, error) {
+func (f *Fault) OpenFile(name string, flag int, perm os.FileMode) (File, error) {
 	if f.p.Trip() {
 		return nil, f.fail("open", name)
 	}
@@ -74,10 +111,14 @@ func (f *faultFS) OpenFile(name string, flag int, perm os.FileMode) (File, error
 	// The same Points, deliberately. The file's operations continue the
 	// sequence the filesystem started, so an open, a write, a sync and a close
 	// are operations 1 to 4 of one scenario rather than two separate counts.
-	return &faultFile{p: f.p, base: file, err: f.err, name: name, shortWrite: f.shortWrite}, nil
+	f.mu.Lock()
+	f.outstanding++
+	f.mu.Unlock()
+
+	return &faultFile{owner: f, p: f.p, base: file, err: f.err, name: name, shortWrite: f.shortWrite}, nil
 }
 
-func (f *faultFS) Remove(name string) error {
+func (f *Fault) Remove(name string) error {
 	if f.p.Trip() {
 		return f.fail("remove", name)
 	}
@@ -88,14 +129,14 @@ func (f *faultFS) Remove(name string) error {
 // *os.LinkError, because the operation names two paths, and a store that
 // type-switches on the error would take a branch under the sweep that it can
 // never take in production. Measured against the os package, not remembered.
-func (f *faultFS) Rename(oldname, newname string) error {
+func (f *Fault) Rename(oldname, newname string) error {
 	if f.p.Trip() {
 		return &os.LinkError{Op: "rename", Old: oldname, New: newname, Err: f.err}
 	}
 	return f.base.Rename(oldname, newname)
 }
 
-func (f *faultFS) Stat(name string) (os.FileInfo, error) {
+func (f *Fault) Stat(name string) (os.FileInfo, error) {
 	if f.p.Trip() {
 		return nil, f.fail("stat", name)
 	}
@@ -109,7 +150,7 @@ func (f *faultFS) Stat(name string) (os.FileInfo, error) {
 // one fails, leaving a partial tree behind. This fails before doing anything,
 // so it never reproduces that state. A store that cleans up after a partial
 // mkdir has no coverage of that path from this adapter.
-func (f *faultFS) MkdirAll(name string, perm os.FileMode) error {
+func (f *Fault) MkdirAll(name string, perm os.FileMode) error {
 	if f.p.Trip() {
 		return f.fail("mkdir", name)
 	}
@@ -118,7 +159,7 @@ func (f *faultFS) MkdirAll(name string, perm os.FileMode) error {
 
 // ReadDir reports Op "open". The real implementation opens the directory
 // first, so a failure surfaces as an open rather than as a read.
-func (f *faultFS) ReadDir(name string) ([]os.DirEntry, error) {
+func (f *Fault) ReadDir(name string) ([]os.DirEntry, error) {
 	if f.p.Trip() {
 		return nil, f.fail("open", name)
 	}
@@ -128,13 +169,17 @@ func (f *faultFS) ReadDir(name string) ([]os.DirEntry, error) {
 // fail builds the error a real filesystem reports for op on name. It is a
 // method because it reads f.err, which is what lets the injected errno be a
 // property of the run rather than a constant in each method.
-func (f *faultFS) fail(op, name string) error {
+func (f *Fault) fail(op, name string) error {
 	return &os.PathError{Op: op, Path: name, Err: f.err}
 }
 
 // faultFile is an open file whose operations are counted on the same sequence
 // as the filesystem that opened it.
 type faultFile struct {
+	// owner is told when this handle is returned, so Outstanding can report a
+	// descriptor leak on an error path.
+	owner *Fault
+
 	p    *fault.Points
 	base File
 	err  error
@@ -350,6 +395,15 @@ func (f *faultFile) Truncate(size int64) error {
 func (f *faultFile) Close() error {
 	tripped := f.p.Trip()
 	closeErr := f.base.Close()
+
+	// Decrement whether or not the close reported an error, and whether or not
+	// this pass injected one. POSIX releases the descriptor either way, and the
+	// real handle above was closed either way, so holding the count open would
+	// report a leak the caller cannot avoid.
+	f.owner.mu.Lock()
+	f.owner.outstanding--
+	f.owner.mu.Unlock()
+
 	if tripped {
 		return f.fail("close")
 	}

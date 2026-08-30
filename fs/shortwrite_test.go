@@ -270,7 +270,12 @@ func TestBothConstructorsVisitTheSamePoints(t *testing.T) {
 		return 3
 	}
 
-	trace := func(build func(*fault.Points, faultfs.FS) faultfs.FS) []int {
+	// The build parameter takes *faultfs.Fault, not faultfs.FS. New and
+	// NewShortWrite return the concrete type so Outstanding is reachable, and a
+	// function VALUE of theirs is not assignable to one returning the interface.
+	// Go has no covariance in a function's result type, so this signature had to
+	// change with them.
+	trace := func(build func(*fault.Points, faultfs.FS) *faultfs.Fault) []int {
 		var reached []int
 		for _, p := range fault.Sweep(t) {
 			reached = append(reached, steps(build(p, newStub())))
