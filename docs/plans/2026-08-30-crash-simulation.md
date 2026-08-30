@@ -786,6 +786,22 @@ func (r *Recorder) existedBefore(p string) bool {
 }
 ```
 
+**Two ordering rules, both of which cost a review round when they were missing.**
+
+1. `existedBefore` must be called BEFORE `r.base.OpenFile`, never after. After the
+   base call, `O_CREATE` has already created the file, so the check always
+   reports "existed" and no create entry is ever recorded. Calling it before is
+   the only placement that answers the question actually being asked.
+2. `r.mu` must be held across `existedBefore`, the base call, AND the entry, as
+   a single critical section — the same rule Task 2's `Read` and `Write` follow.
+   Checking outside the lock and acting inside it lets two goroutines opening
+   the same new path both decide it did not exist, and both record a create.
+
+**A test must pin rule 1.** The three tests in this task all pass against the
+wrong placement, so none of them covers it. Open a file with `O_CREATE` that
+already existed when `Record` was called, and assert that NO create entry is
+recorded for it and that a later write into it therefore has empty `needs`.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./crash/ -v`
