@@ -58,6 +58,12 @@
 // Close clears nothing. POSIX does not make close(2) flush, and a store that
 // treats it as a flush holds the exact defect this package exists to find.
 //
+// An operation the filesystem refused is not recorded at all. It changed
+// nothing, so a record that held it would describe a run that did not happen,
+// and every state built from it reads exactly like a finding. The ordinary
+// idiom `defer fsys.Remove(tmp)` after a successful rename makes that mistake
+// reachable from correct code.
+//
 // The interface needs no new method for the directory rule. OpenFile(dir,
 // os.O_RDONLY, 0) already returns a handle whose Sync the recorder sees, which
 // is also how a Go program syncs a directory in production.
@@ -68,6 +74,27 @@
 // [Model.MetadataDurable] makes a create, rename, remove or mkdir durable as
 // soon as it returns. The strict rule is the default on purpose: a false alarm
 // costs a reader an hour, and a missed defect costs data.
+//
+// # Where a write is recorded
+//
+// A write is recorded at the handle's offset, and the recorder tracks that
+// offset itself. [github.com/dd0wney/fault/fs.File] is Read, Write, Sync,
+// Truncate and Close, with no Seek and no WriteAt, so the offset moves only by
+// the bytes the handle's own reads and writes carry and addition is enough.
+//
+// A handle opened with os.O_APPEND starts at the size the file already holds,
+// not at zero, because every write on it lands at the current end of the file.
+// The recorder asks the base for that size, which is its own bookkeeping and
+// takes no index, in the same way it asks whether the handle is a directory. A
+// size the base will not give is a refusal rather than a guess.
+//
+// Two things are outside that rule, and both are refused rather than modelled.
+// A base that offers Seek or WriteAt through a wider interface is one: the
+// recorder never calls either, so a caller that type-asserts for them reaches
+// past this package. Two handles appending to one file concurrently are the
+// other: each tracks its own offset by addition, and the kernel decides the
+// real one. The whole-record control is what catches either, because the replay
+// stops matching the directory the scenario wrote.
 //
 // # Record once, replay many
 //
@@ -125,6 +152,23 @@
 // Nothing about a filesystem whose reordering the model does not express. The
 // model is an approximation with a name. A store that survives it may still
 // fail on a device that behaves differently.
+//
+// Nothing about zero-fill. A byte range this package says was lost keeps its
+// PRIOR CONTENT. It does not become zeroes. The prior content is already in the
+// record, as an earlier entry, so keeping it is the truthful model of a write
+// that never reached the disk.
+//
+// This is the sharpest modelling choice in the package, and it is made on
+// purpose. A zeroed header can read as a structurally valid value -- an offset
+// of 0, a length of 0, a version of 0 -- so a store parses it, follows it, and
+// fails in a way it never fails in reality. That is a defect report the code
+// under test cannot hold, and manufacturing one is worse than reporting
+// nothing.
+//
+// The cost is that the zero-fill defect class is out of scope. A device that
+// really does leave zeroes in an unwritten sector, and a store that mistakes
+// those zeroes for data, are together a real failure that this package will
+// never produce a state for.
 //
 // Nothing the check does not assert. A check that only opens the store proves
 // that the store opens. This is the same trap the core documentation names for
