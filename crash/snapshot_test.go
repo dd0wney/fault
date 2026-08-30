@@ -61,3 +61,34 @@ func TestDiffTreeReportsEachKindOfDifference(t *testing.T) {
 		t.Errorf("two equal trees differ: %s", d)
 	}
 }
+
+// levels turns one MkdirAll path into the levels that call creates, outermost
+// first, so the record can hold one entry for each. It lives with the recorder
+// and is tested here because it is a path rule, like the rest of this file.
+func TestLevelsListsEveryDirectoryFromTheOutermost(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"a", []string{"a"}},
+		{"a/b", []string{"a", "a/b"}},
+		{"a/b/c", []string{"a", "a/b", "a/b/c"}},
+		// The record root is not a key in the tree, and nothing this package
+		// records can create it, so it yields no level at all.
+		{".", nil},
+		{"", nil},
+	}
+	for _, c := range cases {
+		got := levels(c.in)
+		if len(got) != len(c.want) {
+			t.Errorf("levels(%q) = %q, want %q", c.in, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("levels(%q) = %q, want %q", c.in, got, c.want)
+				break
+			}
+		}
+	}
+}

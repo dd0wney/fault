@@ -3,7 +3,9 @@ package crash
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	faultfs "github.com/dd0wney/fault/fs"
@@ -296,6 +298,16 @@ func (r *Recorder) Stat(name string) (os.FileInfo, error) {
 	return r.base.Stat(name)
 }
 
+// MkdirAll records one entry for each level it actually created, outermost
+// first, and each level depends on its parent where this run made the parent.
+//
+// One entry for the deepest path alone described a directory that appears with
+// no directory above it. The positive control refused every such record with
+// "missing: a", so the package could record no scenario that builds a directory
+// tree at all.
+//
+// A level already present is not created, so it takes no entry: two entries for
+// one name would give it two origins, and a crash matches neither.
 func (r *Recorder) MkdirAll(name string, perm os.FileMode) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -308,10 +320,33 @@ func (r *Recorder) MkdirAll(name string, perm os.FileMode) error {
 	if !ok {
 		return nil
 	}
-	n := r.add(entry{k: kMkdir, path: p})
-	r.origin[p] = n
-	r.live[p] = struct{}{}
+	for _, lvl := range levels(p) {
+		if r.exists(lvl) {
+			continue
+		}
+		n := r.add(entry{k: kMkdir, path: lvl, needs: r.dependsOn(path.Dir(lvl))})
+		r.origin[lvl] = n
+		r.live[lvl] = struct{}{}
+	}
 	return nil
+}
+
+// levels lists p and every directory above it, outermost first, which is the
+// order MkdirAll builds them in.
+//
+// The record root itself is not a level. It is not a key in the tree, nothing
+// this package records can create it, and an entry for it would put a "." into
+// every rebuilt state.
+func levels(p string) []string {
+	if p == "" || p == "." {
+		return nil
+	}
+	parts := strings.Split(p, "/")
+	out := make([]string, 0, len(parts))
+	for i := range parts {
+		out = append(out, strings.Join(parts[:i+1], "/"))
+	}
+	return out
 }
 
 func (r *Recorder) ReadDir(name string) ([]os.DirEntry, error) {
