@@ -235,7 +235,12 @@ func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.Fi
 
 	switch {
 	case flag&os.O_CREATE != 0 && !existed:
-		n := r.add(entry{k: kCreate, path: p})
+		// The create depends on the mkdir of the directory that holds the name,
+		// where this run made that directory. Without it the walk builds a file
+		// inside a directory whose creation was lost, which section 6.1 calls
+		// illegal -- and writeTo re-creates the parent, so no check can tell
+		// that state from one that lost nothing while its name says otherwise.
+		n := r.add(entry{k: kCreate, path: p, needs: r.dependsOn(path.Dir(p))})
 		r.origin[p] = n
 		r.live[p] = struct{}{}
 	default:
@@ -304,7 +309,15 @@ func (r *Recorder) Rename(oldname, newname string) error {
 	if !okFrom || !okTo {
 		return nil
 	}
-	n := r.add(entry{k: kRename, path: from, to: to, needs: r.dependsOn(from)})
+	// A rename needs the origin of the name it moves, and the mkdir of the
+	// directory it moves INTO where this run made that directory. It places a
+	// name in a directory exactly as a create does, so it carries the same
+	// dependency for the same reason. split already treats both directories
+	// alike when it decides durability.
+	needs := r.dependsOn(from)
+	needs = append(needs, r.dependsOn(path.Dir(to))...)
+
+	n := r.add(entry{k: kRename, path: from, to: to, needs: needs})
 	delete(r.origin, from)
 	r.origin[to] = n
 	delete(r.live, from)
