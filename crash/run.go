@@ -56,10 +56,25 @@ func plan(r *Recorder, m Model) ([]state, error) {
 	}
 
 	byIndex := index(entries)
-	seen := map[string]bool{}
 	var out []state
 
 	for _, k := range points {
+		// seen is scoped to ONE crash point, not shared across the walk.
+		//
+		// The crash point is not incidental to a state. It is what says how
+		// much the store had already acknowledged when the power went, so the
+		// same bytes on disk after crash point 3 and after crash point 7 are
+		// two different situations and a check may judge them differently.
+		// Sharing seen across the walk collapsed them onto the EARLIER point,
+		// which is the more permissive one, so the walk under-reported. A
+		// missed finding is invisible, and that is the failure this package
+		// exists to prevent.
+		//
+		// Within one crash point the rule is unchanged: two lost sets that
+		// rebuild the same tree are one state, because the check cannot tell
+		// them apart.
+		seen := map[string]bool{}
+
 		durable, pending := split(entries, k, m)
 		us := units(entries, pending, k, m)
 

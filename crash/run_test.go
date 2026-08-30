@@ -341,10 +341,17 @@ func TestAStateNeverHoldsWorkFromAfterItsCrashPoint(t *testing.T) {
 		}
 	})
 
-	// Worked by hand: the first write gives "BA" and "AA", the second gives
-	// "BC" and "AC", and its other two subsets repeat the first write's pair.
-	if states != 4 {
-		t.Errorf("Run ran %d states, want 4", states)
+	// Worked by hand: the first write gives "BA" and "AA", and the second
+	// gives "BC", "AC", "BA" and "AA".
+	//
+	// The last two repeat the first write's pair byte for byte, and they are
+	// still their own states, because plan deduplicates within one crash point
+	// and not across the walk. "BA" after the first write and "BA" after the
+	// second are two different situations: the second write had returned in
+	// one of them and not in the other, and a check that knows what the store
+	// acknowledged judges them differently.
+	if states != 6 {
+		t.Errorf("Run ran %d states, want 6", states)
 	}
 }
 
@@ -458,5 +465,54 @@ func TestTheReplayControlRunsBeforeTheStateWalkNotAfterIt(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "did not reproduce the directory") {
 		t.Fatalf("plan returned %v, want the replay control's diagnostic", err)
+	}
+}
+
+// Two crash points can rebuild the same bytes, and both states must survive.
+//
+// The crash point says how much the store had acknowledged when the power
+// went, so identical trees at two points are two situations, not one. Dropping
+// the later one collapses towards the EARLIER point, which is the one where
+// less had been acknowledged and more values are still legal, so the walk
+// under-reports. A missed finding is invisible, and the reference table caught
+// exactly this: a store that reverted acknowledged data at one crash point had
+// that state swallowed by an innocent duplicate at an earlier one.
+//
+// The fixture is the smallest one that shows it. The create of "a" does not
+// depend on the mkdir of "d", so the crash point at the create can lose either
+// name independently, and two of its four subsets rebuild trees the mkdir's
+// own crash point already produced.
+func TestTwoCrashPointsKeepIdenticalTreesApart(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(faultfs.OS(), dir)
+
+	if err := rec.MkdirAll(filepath.Join(dir, "d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := rec.OpenFile(filepath.Join(dir, "a"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := crash.Plan(rec, crash.Model{})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	// The last two names are the ones a walk that deduplicated globally lost:
+	// losing the create leaves the mkdir's own "lost=none" tree, and losing
+	// both leaves its "lost=d:mkdir1" tree.
+	want := []string{
+		"after=d:mkdir1/lost=d:mkdir1",
+		"after=d:mkdir1/lost=none",
+		"after=a:create1/lost=a:create1",
+		"after=a:create1/lost=a:create1+d:mkdir1",
+		"after=a:create1/lost=d:mkdir1",
+		"after=a:create1/lost=none",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("plan gave\n  %q\nwant\n  %q", got, want)
 	}
 }
