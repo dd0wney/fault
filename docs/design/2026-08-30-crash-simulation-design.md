@@ -522,7 +522,61 @@ synced. The `MetadataDurable: true` path runs everywhere. The POSIX path needs a
 build-tagged skip with a stated reason, and CI decides whether the reason was
 right — local gates do not cover Windows.
 
-## 12. Open decisions
+## 12. Positional writes and seeks, by optional interface
+
+**Decided 2026-08-30. Follow-up work, not part of v0's fifteen tasks.**
+
+A great deal of real storage code publishes a record by writing a body and then
+backpatching a header at offset 0, and a crash simulator that cannot model a
+positional write is limited generally rather than limited for one project. The
+graphdb project supplied the concrete instance: with `fs.File` as it stands,
+its store cannot open at all -- WAL init fails on `Seek(0, 0)`, and skipping the
+WAL, `Close` fails publishing the snapshot on `WriteAt(148, 0)`.
+
+**`fs.File` does not change.** It stays at five methods. Instead the wrappers in
+`fault/fs` and `fault/crash` implement `Seek` and `WriteAt`, delegating when the
+base supports them and returning a clear error naming the operation when it does
+not. A consumer type-asserts, exactly as a consumer of `io` asserts for
+`io.ReaderFrom`, `io.WriterTo` or `io.ReaderAt`.
+
+| Option | Why not |
+|---|---|
+| Add both methods to `fs.File` | Breaks every external implementer, and enlarges a published interface whose small size is load-bearing for the standard library argument. |
+| Add `WriteAt` only | Two breaking changes instead of one. `Seek` is already wanted. |
+| Do nothing | The class of code that backpatches a header stays out of reach forever. |
+
+### 12.1 Both methods are small, and one earlier claim about them was wrong
+
+An earlier version of this argument held that `Seek` was the dearer of the two,
+because the recorder would have to model three whence values and track file size
+for `SEEK_END`. That is false, and it was asserted without being checked.
+
+`io.Seeker.Seek` returns **the new offset relative to the start of the file**.
+So the recorder sets `f.off` from the base's own answer and models nothing:
+
+	n, err := f.base.Seek(offset, whence)
+	if err == nil {
+		f.off = n
+	}
+
+A seek changes no state, so it takes an index and no more. `WriteAt` carries its
+own offset, so it records `off` directly and does not touch the handle position
+at all. Everything downstream -- the durability split, the loss units, the
+closure and the replay -- keys on `entry.off` and needs no change for either.
+
+`fault/fs.OS()` needs no change either: `*os.File` already satisfies the wider
+interface, which was confirmed by compiling it rather than by reading the
+documentation.
+
+### 12.2 What §5.2's invariant becomes
+
+§5.2 states that tracking the offset by addition is sound only because `fs.File`
+has no `Seek`. Under this design that stays true of the INTERFACE, and the
+wrapper's rule becomes: the offset is the last seek result plus the bytes moved
+since. The whole-record control of §9.2 is what catches a mistake in it, and that
+control is now the reason this extension is safe to add at all.
+
+## 13. Open decisions
 
 1. **The byte budget of §6.3 and the state cap of §7.2.** Both need a measured
    number. Run the generator over the four reference stores of §11.1 and choose
