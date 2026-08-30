@@ -138,6 +138,26 @@ func (r *Recorder) fail(err error) {
 	}
 }
 
+// THE ORDER RULE, obeyed by every method below.
+//
+// An entry is recorded only after the base call has returned nil. A call the
+// filesystem refused changed nothing, so a record that holds it describes a
+// run that did not happen, and every state built from it is a fiction that
+// reads exactly like a finding.
+//
+// The measured case is the ordinary idiom `defer fsys.Remove(tmp)` after a
+// successful rename. The remove fails with ENOENT, because the rename already
+// moved the name. Recording it anyway put a phantom remove in the log, and the
+// walk built a state in which NEITHER name held the value. No power cut can
+// produce that state. A crash simulator that flags correct code is worse than
+// none, because every later finding then needs a human to re-derive whether it
+// is real.
+//
+// The lock still spans the base call. A check-then-act race was fixed once
+// already -- two callers opening the same new path could both see "does not
+// exist" and both record a create -- and TestConcurrentOpensOnOneNewPathRecord-
+// ExactlyOneCreate is its regression guard. Only the decision moved.
+
 // add appends an entry and returns its index. The caller holds r.mu.
 func (r *Recorder) add(e entry) int {
 	e.n = len(r.entries) + 1
@@ -228,29 +248,43 @@ func (r *Recorder) exists(p string) bool {
 
 func (r *Recorder) Remove(name string) error {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// rel runs before the base call, so a name outside root is refused whether
+	// or not the removal succeeds. The refusal only ever makes Run fail loudly.
 	p, ok := r.rel(name)
-	if ok {
-		r.add(entry{k: kRemove, path: p, needs: r.dependsOn(p)})
-		delete(r.origin, p)
-		delete(r.live, p)
+
+	if err := r.base.Remove(name); err != nil {
+		return err
 	}
-	r.mu.Unlock()
-	return r.base.Remove(name)
+	if !ok {
+		return nil
+	}
+	r.add(entry{k: kRemove, path: p, needs: r.dependsOn(p)})
+	delete(r.origin, p)
+	delete(r.live, p)
+	return nil
 }
 
 func (r *Recorder) Rename(oldname, newname string) error {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	from, okFrom := r.rel(oldname)
 	to, okTo := r.rel(newname)
-	if okFrom && okTo {
-		n := r.add(entry{k: kRename, path: from, to: to, needs: r.dependsOn(from)})
-		delete(r.origin, from)
-		r.origin[to] = n
-		delete(r.live, from)
-		r.live[to] = struct{}{}
+
+	if err := r.base.Rename(oldname, newname); err != nil {
+		return err
 	}
-	r.mu.Unlock()
-	return r.base.Rename(oldname, newname)
+	if !okFrom || !okTo {
+		return nil
+	}
+	n := r.add(entry{k: kRename, path: from, to: to, needs: r.dependsOn(from)})
+	delete(r.origin, from)
+	r.origin[to] = n
+	delete(r.live, from)
+	r.live[to] = struct{}{}
+	return nil
 }
 
 func (r *Recorder) Stat(name string) (os.FileInfo, error) {
@@ -264,13 +298,20 @@ func (r *Recorder) Stat(name string) (os.FileInfo, error) {
 
 func (r *Recorder) MkdirAll(name string, perm os.FileMode) error {
 	r.mu.Lock()
-	if p, ok := r.rel(name); ok {
-		n := r.add(entry{k: kMkdir, path: p})
-		r.origin[p] = n
-		r.live[p] = struct{}{}
+	defer r.mu.Unlock()
+
+	p, ok := r.rel(name)
+
+	if err := r.base.MkdirAll(name, perm); err != nil {
+		return err
 	}
-	r.mu.Unlock()
-	return r.base.MkdirAll(name, perm)
+	if !ok {
+		return nil
+	}
+	n := r.add(entry{k: kMkdir, path: p})
+	r.origin[p] = n
+	r.live[p] = struct{}{}
+	return nil
 }
 
 func (r *Recorder) ReadDir(name string) ([]os.DirEntry, error) {
@@ -342,18 +383,31 @@ func (f *file) Write(b []byte) (int, error) {
 	return n, err
 }
 
+// Sync records nothing when the base call fails. A sync that failed made
+// nothing durable, so a record that holds it lets the model clear a pending set
+// the disk still holds, and every state that a crash there could really leave
+// stops being generated. That is an under-report, and a missed defect is
+// invisible.
 func (f *file) Sync() error {
 	f.r.mu.Lock()
+	defer f.r.mu.Unlock()
+
+	if err := f.base.Sync(); err != nil {
+		return err
+	}
 	f.r.add(entry{k: kSync, path: f.path, dir: f.dir})
-	f.r.mu.Unlock()
-	return f.base.Sync()
+	return nil
 }
 
 func (f *file) Truncate(size int64) error {
 	f.r.mu.Lock()
+	defer f.r.mu.Unlock()
+
+	if err := f.base.Truncate(size); err != nil {
+		return err
+	}
 	f.r.add(entry{k: kTruncate, path: f.path, size: size, needs: f.r.dependsOn(f.path)})
-	f.r.mu.Unlock()
-	return f.base.Truncate(size)
+	return nil
 }
 
 // Close records an index and nothing else. POSIX does not make close(2) flush,

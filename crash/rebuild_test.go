@@ -129,3 +129,34 @@ func TestReplayRefusesToInventAFile(t *testing.T) {
 		t.Fatal("replay invented a file for a write with no present create")
 	}
 }
+
+// A present remove of a name no present entry created must be REFUSED, exactly
+// as a write, a truncate and a rename are. Deleting an absent key in silence is
+// what let a phantom remove -- one the base itself refused -- reach the walk
+// and build a state no power cut can produce. The control replays the whole
+// record, so this guard is what would have caught it.
+func TestReplayRefusesToRemoveAFileNoPresentEntryCreated(t *testing.T) {
+	entries := []entry{
+		{n: 1, k: kCreate, path: "a"},
+		{n: 2, k: kRemove, path: "a", needs: []int{1}},
+	}
+	// entry 1, the create, is absent -- only the remove that names it is present.
+	_, err := replay(tree{}, entries, map[int]bool{2: true}, nil)
+	if err == nil {
+		t.Fatal("replay deleted a name no present entry created, in silence")
+	}
+}
+
+// The refusal above must not fire on a path that arrived from the snapshot. It
+// has no create entry by construction, and removing it is the commonest thing a
+// scenario does.
+func TestReplayRemovesASnapshotPath(t *testing.T) {
+	entries := []entry{{n: 1, k: kRemove, path: "a"}}
+	got, err := replay(tree{"a": {data: []byte("v1")}}, entries, map[int]bool{1: true}, nil)
+	if err != nil {
+		t.Fatalf("replay refused to remove a snapshot path: %v", err)
+	}
+	if d := diffTree(tree{}, got); d != "" {
+		t.Errorf("the remove did not apply:\n%s", d)
+	}
+}
