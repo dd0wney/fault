@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dd0wney/fault/crash"
 	faultfs "github.com/dd0wney/fault/fs"
@@ -214,6 +215,66 @@ func TestAReadAdvancesTheOffsetForTheNextWrite(t *testing.T) {
 	write := findEntry(t, crash.Entries(rec), "write")
 	if write.Off != int64(n) {
 		t.Errorf("write recorded at offset %d, want %d (the bytes read)", write.Off, n)
+	}
+}
+
+// delayedOpenFS wraps a real FS and sleeps before delegating OpenFile. A real
+// disk call is fast enough that two goroutines opening the same new path
+// might overlap the window between checking whether it exists and recording
+// what happened, but only sometimes -- and a test that fails only sometimes
+// is not a regression guard, it is noise. The sleep widens that window past
+// the time it takes every goroutine in the test to reach it, so the overlap
+// is reliable rather than hoped for.
+type delayedOpenFS struct {
+	faultfs.FS
+	delay time.Duration
+}
+
+func (d delayedOpenFS) OpenFile(name string, flag int, perm os.FileMode) (faultfs.File, error) {
+	time.Sleep(d.delay)
+	return d.FS.OpenFile(name, flag, perm)
+}
+
+// Two callers opening the same new path must not both record a create: one
+// path gets one directory entry, and a second create would hand a later
+// dependency an origin that does not correspond to what a crash could leave.
+// Review finding 2 found the window this closes: existedBefore was read
+// outside r.mu and acted on inside it, so two goroutines could both see "did
+// not exist". OpenFile now holds r.mu across the whole call, the same shape
+// Read and Write already use, which removes the window rather than narrowing
+// it.
+func TestConcurrentOpensOnOneNewPathRecordExactlyOneCreate(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(delayedOpenFS{FS: faultfs.OS(), delay: 5 * time.Millisecond}, dir)
+	name := filepath.Join(dir, "a")
+
+	const goroutines = 8
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			f, err := rec.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
+			if err != nil {
+				t.Errorf("open: %v", err)
+				return
+			}
+			_ = f.Close()
+		}()
+	}
+	close(start) // release every goroutine at once, to force maximum overlap
+	wg.Wait()
+
+	creates := 0
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "create" {
+			creates++
+		}
+	}
+	if creates != 1 {
+		t.Errorf("recorded %d create entries for one new path, want exactly 1", creates)
 	}
 }
 
