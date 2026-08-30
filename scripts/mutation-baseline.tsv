@@ -9,6 +9,19 @@
 #
 # NOT COVERED HERE: the tools module. It is a separate module, so `go list
 # ./...` from this root does not see it and the completeness check above
-# cannot enforce a row for it. Its score is 0.39, which is weak, and the
-# honest position is that the mutation gate covers the library and not the
-# tooling. Fixing that means a second gate with its own baseline.
+# cannot enforce a row for it. The honest position is that the mutation gate
+# covers the library and not the tooling.
+#
+# MEASURED 2026-08-30: ./coupling/ scores 0.426866, not the 0.39 this note
+# used to assert. Two commits since that figure was written raise it —
+# a804663 added the registry check and 4ca3b62 made the walk regression test
+# discriminate — so the old number was stale rather than wrong. Read from a
+# run, not from this file.
+#
+# Fixing the gap is SMALLER than this note used to claim. No script change is
+# needed: mutation.sh already takes --root and --baseline, and
+#
+#   scripts/mutation.sh --root tools --baseline tools/mutation-baseline.tsv
+#
+# exits 0 and prints a real score today. What is missing is the baseline file
+# with a floor recorded from a measured run, and a CI step to invoke it.
