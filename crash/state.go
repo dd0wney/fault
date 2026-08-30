@@ -1,6 +1,11 @@
 package crash
 
-import "path"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"path"
+)
 
 // crashPoints returns the entry indexes after which a crash point sits.
 //
@@ -130,4 +135,56 @@ func sectorsOf(e entry, sector int64) []unit {
 		at = next
 	}
 	return out
+}
+
+// closure drops every entry that needs a dropped one, repeatedly, until
+// nothing more falls.
+//
+// Without it the generator produces states that no power cut can make -- a
+// file holding data with no directory entry, most often. Those are not
+// findings. They train a reader to ignore the tool, which is worse than
+// having no tool.
+//
+// The loop keeps going until a pass changes nothing, rather than trusting a
+// single pass, because entries is not guaranteed to arrive in dependency
+// order -- only in dependency order does one forward pass already cascade a
+// whole chain.
+func closure(entries []entry, keep map[int]bool) map[int]bool {
+	out := make(map[int]bool, len(keep))
+	for k, v := range keep {
+		out[k] = v
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, e := range entries {
+			if !out[e.n] {
+				continue
+			}
+			for _, need := range e.needs {
+				if !out[need] {
+					out[e.n] = false
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+// fingerprint is a stable hash of a tree, used to drop duplicate states
+// before any of them becomes a subtest.
+//
+// The keys come from t.keys(), which sorts. Go randomises map iteration on
+// purpose, so a fingerprint that ranged over t directly would merge
+// different states on one run and split identical ones on the next, and
+// go test -run could never reliably reproduce a failure.
+func fingerprint(t tree) string {
+	h := sha256.New()
+	for _, k := range t.keys() {
+		n := t[k]
+		fmt.Fprintf(h, "%s\x00%v\x00%d\x00", k, n.dir, len(n.data))
+		h.Write(n.data)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
