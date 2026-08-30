@@ -523,3 +523,137 @@ func TestResetSessionIsForwardedAndDoesNotCount(t *testing.T) {
 		t.Fatal("the sweep never armed operation 2, so nothing was asserted")
 	}
 }
+
+// PrepareContext, BeginTx and Ping are operations, and each counts.
+//
+// The mutation gate found all three unreachable: no test drove any of them, so
+// deleting the `return nil, ErrInjected` from each changed no result.
+func TestTheContextMethodsEachCount(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		call func(driver.Conn) error
+	}{
+		{"PrepareContext", func(c driver.Conn) error {
+			st, err := c.(driver.ConnPrepareContext).PrepareContext(context.Background(), "select 1")
+			if st != nil {
+				_ = st.Close()
+			}
+			return err
+		}},
+		{"BeginTx", func(c driver.Conn) error {
+			_, err := c.(driver.ConnBeginTx).BeginTx(context.Background(), driver.TxOptions{})
+			return err
+		}},
+		{"Ping", func(c driver.Conn) error {
+			return c.(driver.Pinger).Ping(context.Background())
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			reached := false
+			for n, p := range fault.Sweep(t) {
+				f := faultsql.New(p, &testDriver{})
+				conn, err := f.Connect(context.Background()) // 1
+				if err != nil {
+					continue
+				}
+				got := c.call(conn) // 2
+				_ = conn.Close()
+
+				if n != 2 {
+					continue
+				}
+				reached = true
+				if !errors.Is(got, faultsql.ErrInjected) {
+					t.Errorf("%s = %v with operation 2 armed, want the injected error", c.name, got)
+				}
+			}
+			if !reached {
+				t.Fatalf("the sweep never armed operation 2, so %s was not asserted", c.name)
+			}
+		})
+	}
+}
+
+// A base driver that implements only the REQUIRED interfaces still works, and
+// the wrapper's fallbacks are what make that true.
+//
+// database/sql is written for this driver as much as for a complete one. The
+// mutation gate found every `if !ok` branch unreachable, because the only test
+// driver implemented all four optional interfaces — the "testing a target that
+// resembles the gate's target" defect, in the test data rather than the code.
+func TestTheFallbacksWorkWhenTheBaseOffersOnlyTheRequiredMethods(t *testing.T) {
+	f := faultsql.New(&fault.Points{}, &plainDriver{})
+
+	c, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	st, err := c.(driver.ConnPrepareContext).PrepareContext(context.Background(), "select 1")
+	if err != nil {
+		t.Errorf("PrepareContext against a base without it: %v", err)
+	} else {
+		_ = st.Close()
+	}
+
+	if _, err := c.(driver.ConnBeginTx).BeginTx(context.Background(), driver.TxOptions{}); err != nil {
+		t.Errorf("BeginTx against a base without it: %v", err)
+	}
+
+	// A base that cannot be pinged reports success rather than an error. The
+	// wrapper must not invent a failure the driver beneath it never had.
+	if err := c.(driver.Pinger).Ping(context.Background()); err != nil {
+		t.Errorf("Ping against a base without a Pinger = %v, want nil", err)
+	}
+
+	// The same for the session reset: nothing to reset is not an error.
+	if err := c.(driver.SessionResetter).ResetSession(context.Background()); err != nil {
+		t.Errorf("ResetSession against a base without it = %v, want nil", err)
+	}
+}
+
+// A failure from the BASE passes through unchanged and is not reported as an
+// injected one. Otherwise a real defect in the driver under test reads as a
+// fault this package caused.
+func TestABaseFailurePassesThroughUnchanged(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		base *testDriver
+		call func(driver.Conn) error
+	}{
+		{"Prepare", &testDriver{prepareErr: errBase}, func(c driver.Conn) error {
+			_, err := c.Prepare("select 1")
+			return err
+		}},
+		{"PrepareContext", &testDriver{prepareErr: errBase}, func(c driver.Conn) error {
+			_, err := c.(driver.ConnPrepareContext).PrepareContext(context.Background(), "select 1")
+			return err
+		}},
+		{"Begin", &testDriver{beginErr: errBase}, func(c driver.Conn) error {
+			_, err := c.Begin() //nolint:staticcheck // driver.Conn requires Begin, so the wrapper is tested through it
+			return err
+		}},
+		{"BeginTx", &testDriver{beginErr: errBase}, func(c driver.Conn) error {
+			_, err := c.(driver.ConnBeginTx).BeginTx(context.Background(), driver.TxOptions{})
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := faultsql.New(&fault.Points{}, c.base)
+			conn, err := f.Connect(context.Background())
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			defer func() { _ = conn.Close() }()
+
+			got := c.call(conn)
+			if !errors.Is(got, errBase) {
+				t.Errorf("%s = %v, want the base driver's own error unchanged", c.name, got)
+			}
+			if errors.Is(got, faultsql.ErrInjected) {
+				t.Errorf("%s reported a base failure as an injected one, so a real defect would read as one this package caused", c.name)
+			}
+		})
+	}
+}

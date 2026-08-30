@@ -33,6 +33,12 @@ type testDriver struct {
 	// a test needs to see that it arrived.
 	resetCount int
 
+	// prepareErr and beginErr, when set, are what the base returns instead of
+	// a statement or a transaction. Without them the adapter's pass-through
+	// paths are unreachable, and the mutation gate reported exactly that.
+	prepareErr error
+	beginErr   error
+
 	// connectErr, when set, is what the base returns instead of a connection.
 	// A base that cannot fail leaves the adapter's own error path untested,
 	// and the mutation gate reported exactly that: removing `return nil, err`
@@ -85,11 +91,17 @@ var (
 )
 
 func (c *testConn) Prepare(query string) (driver.Stmt, error) {
+	c.d.mu.Lock()
+	err := c.d.prepareErr
+	c.d.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	return &testStmt{}, nil
 }
 
 func (c *testConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	return &testStmt{}, nil
+	return c.Prepare(query)
 }
 
 func (c *testConn) Close() error {
@@ -99,10 +111,18 @@ func (c *testConn) Close() error {
 	return nil
 }
 
-func (c *testConn) Begin() (driver.Tx, error) { return &testTx{}, nil }
+func (c *testConn) Begin() (driver.Tx, error) {
+	c.d.mu.Lock()
+	err := c.d.beginErr
+	c.d.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return &testTx{}, nil
+}
 
 func (c *testConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	return &testTx{}, nil
+	return c.Begin()
 }
 
 func (c *testConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
@@ -158,3 +178,26 @@ type testTx struct{}
 
 func (testTx) Commit() error   { return nil }
 func (testTx) Rollback() error { return nil }
+
+// plainDriver implements the REQUIRED interfaces and nothing else.
+//
+// database/sql is written for exactly this driver as much as for a complete
+// one, and the adapter's fallback branches are only reachable through it. The
+// mutation gate found them unreachable: every `if !ok` path in PrepareContext,
+// BeginTx, Ping and ResetSession survived, because the only test driver
+// implemented all four optional interfaces.
+type plainDriver struct{ pings int }
+
+func (d *plainDriver) Open(name string) (driver.Conn, error) { return &plainConn{d: d}, nil }
+func (d *plainDriver) Driver() driver.Driver                 { return d }
+func (d *plainDriver) Connect(ctx context.Context) (driver.Conn, error) {
+	return &plainConn{d: d}, nil
+}
+
+type plainConn struct{ d *plainDriver }
+
+var _ driver.Conn = (*plainConn)(nil)
+
+func (c *plainConn) Prepare(query string) (driver.Stmt, error) { return &testStmt{}, nil }
+func (c *plainConn) Close() error                              { return nil }
+func (c *plainConn) Begin() (driver.Tx, error)                 { return &testTx{}, nil }
