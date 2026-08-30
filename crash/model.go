@@ -37,5 +37,9 @@ type Model struct {
 	// handle cannot be synced.
 	MetadataDurable bool
 
+	// Cover chooses which of the states the model allows the walk actually
+	// visits. Exhaustive, the zero value, visits every legal subset of the
+	// pending units and refuses past its cap. Prefixes visits u+1 of them and
+	// is the deterministic escape from that cap.
 	Cover Cover
 }

@@ -194,3 +194,21 @@ func TestAPointIsNamedAfterTheEntryTheProcessDiedAfter(t *testing.T) {
 		t.Errorf("pointName = %q, want %q", got, "after=data.tmp:write1")
 	}
 }
+
+// opNames is now the ONE table that turns a kind into a word: the record's
+// state names and the test-visible Entry.Kind both read it. A kind missing from
+// it renders an empty string rather than failing, so a new kind would silently
+// merge its occurrence counts with another kind's.
+//
+// The loop runs from the first kind to the last, and the length check catches a
+// kind added AFTER kSync, which the loop alone would not reach.
+func TestEveryKindHasExactlyOneName(t *testing.T) {
+	for k := kRead; k <= kSync; k++ {
+		if opNames[k] == "" {
+			t.Errorf("kind %d has no name in opNames", int(k))
+		}
+	}
+	if len(opNames) != int(kSync)+1 {
+		t.Errorf("opNames holds %d names for %d kinds", len(opNames), int(kSync)+1)
+	}
+}
