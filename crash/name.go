@@ -134,6 +134,18 @@ func isTestSpace(r rune) bool {
 	return false
 }
 
+// unitNames names each lost unit, in a stable order. Both the state name and
+// the detail Run prints for a failing state are built from this list, and they
+// must name the same unit the same way or a reader cannot pair them up.
+func unitNames(byIndex map[int]entry, lost []unit) []string {
+	parts := make([]string, 0, len(lost))
+	for _, u := range lost {
+		parts = append(parts, unitName(byIndex, u))
+	}
+	sort.Strings(parts)
+	return parts
+}
+
 // stateName names the set of units a state lost.
 //
 // When the full list would be too long to read, the name becomes a count and
@@ -145,12 +157,7 @@ func stateName(byIndex map[int]entry, lost []unit) string {
 		return "lost=none"
 	}
 
-	parts := make([]string, 0, len(lost))
-	for _, u := range lost {
-		parts = append(parts, unitName(byIndex, u))
-	}
-	sort.Strings(parts)
-
+	parts := unitNames(byIndex, lost)
 	full := "lost=" + strings.Join(parts, "+")
 	if len(full) <= maxNameLen {
 		return full

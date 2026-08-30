@@ -43,6 +43,34 @@ func Entries(r *Recorder) []Entry {
 // Failure exposes the held refusal to tests.
 func Failure(r *Recorder) error { return r.failure() }
 
+// ErrNoMutations and ErrTooManyStates expose two of the four refusals to tests
+// in package crash_test. A test that asked only for a non-nil error could not
+// tell one refusal from another, and every one of them fails the same way.
+var (
+	ErrNoMutations   = errNoMutations
+	ErrTooManyStates = errTooManyStates
+)
+
+// Plan exposes the state names to tests, without a *testing.T. The names are
+// what go test -run matches, so a test that reads them reads exactly what a
+// developer would have to type to re-run one state.
+func Plan(r *Recorder, m Model) ([]string, error) {
+	states, err := plan(r, m)
+	if err != nil {
+		return nil, err
+	}
+
+	r.mu.Lock()
+	byIndex := index(r.entries)
+	r.mu.Unlock()
+
+	out := make([]string, len(states))
+	for i, s := range states {
+		out[i] = pointName(byIndex, s.point) + "/" + s.name
+	}
+	return out, nil
+}
+
 // Needs exposes each entry's dependency list, in entry order.
 func Needs(r *Recorder) [][]int {
 	r.mu.Lock()
