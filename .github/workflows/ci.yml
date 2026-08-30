@@ -132,6 +132,22 @@ jobs:
           go -C tools build -o "$RUNNER_TEMP/coupling" ./coupling
           "$RUNNER_TEMP/coupling" -root . -registry docs/couplings.tsv -profile coverage.out
 
+      # tools/ carries its own mutation baseline (tools/mutation-baseline.tsv),
+      # read by the same scripts/mutation.sh the library uses, pointed at the
+      # tools module with --root and --baseline. See that file's header for
+      # what the recorded floor covers.
+      - name: install go-mutesting
+        run: go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest
+
+      # The selftest runs first, same reason as the mutation job below: a
+      # gate that cannot report a violation and a gate with nothing to
+      # report print the same thing.
+      - name: the mutation gate can report a violation
+        run: ./scripts/mutation-selftest.sh
+
+      - name: tools mutation score against the recorded floor
+        run: ./scripts/mutation.sh --root tools --baseline tools/mutation-baseline.tsv
+
   mutation:
     name: mutation testing
     runs-on: ubuntu-latest

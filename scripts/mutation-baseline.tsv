@@ -8,21 +8,13 @@
 ./role/	0.74	Survivors are the mutex (only -race sees it, and go-mutesting does not run with it), the armed==0 guard on a Points no exported call can construct, and message-text variants the assertions do not pin.
 ./crash/	0.75	MEASURED 2026-08-30, after the final fix wave: 0.764831, 111 survivors of 472. The earlier figure was 110 of 450, so the score moved up rather than down. The classes below were derived at that earlier run and were not re-derived for this one. Most are equivalents or paths no test can reach: bounds set with measured headroom (maxBytes, maxNameLen, the n>=63 guard, the 16-hex digest), which no assertion can pin by construction; the recorder's mutex (only -race sees it, and go-mutesting does not run with it); a removed t.Helper; and error returns a real filesystem does not take under test (readTree, writeTo, and the replay control's own two). Three are real gaps, recorded rather than hidden: no scenario writes twice on one handle, so f.off += reads the same as f.off =; no scenario has two pending splittable writes at one crash point, so SplitAtCrashOnly's guard in units is unpinned; and no reference store puts a file under a nested directory, so the rename's second-directory term in split is unpinned.
 #
-# NOT COVERED HERE: the tools module. It is a separate module, so `go list
-# ./...` from this root does not see it and the completeness check above
-# cannot enforce a row for it. The honest position is that the mutation gate
-# covers the library and not the tooling.
-#
-# MEASURED 2026-08-30: ./coupling/ scores 0.426866, not the 0.39 this note
-# used to assert. Two commits since that figure was written raise it —
-# a804663 added the registry check and 4ca3b62 made the walk regression test
-# discriminate — so the old number was stale rather than wrong. Read from a
-# run, not from this file.
-#
-# Fixing the gap is SMALLER than this note used to claim. No script change is
-# needed: mutation.sh already takes --root and --baseline, and
+# The tools module. It is a separate module, so `go list ./...` from this
+# root does not see it and the completeness check above cannot enforce a row
+# for it. It carries its own baseline instead: tools/mutation-baseline.tsv,
+# read by
 #
 #   scripts/mutation.sh --root tools --baseline tools/mutation-baseline.tsv
 #
-# exits 0 and prints a real score today. What is missing is the baseline file
-# with a floor recorded from a measured run, and a CI step to invoke it.
+# and run in CI by the "tools" job in .github/workflows/ci.yml, right after
+# that job's own tests. The gap this note used to describe — a mechanism that
+# worked but had no floor and no CI step — is closed.
