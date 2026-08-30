@@ -171,7 +171,11 @@ func (c *conn) Prepare(query string) (driver.Stmt, error) {
 	if c.f.trip() {
 		return nil, ErrInjected
 	}
-	return c.base.Prepare(query)
+	st, err := c.base.Prepare(query)
+	if err != nil {
+		return nil, err
+	}
+	return &stmt{f: c.f, base: st}, nil
 }
 
 // Close counts one operation, and decrements whether or not it fails.
@@ -209,7 +213,160 @@ func (c *conn) Begin() (driver.Tx, error) {
 	// it is not actionable here. driver.Conn REQUIRES the method, so an
 	// implementation must provide it and a wrapper must forward to the base's
 	// version of it. ConnBeginTx is additional, not a replacement.
-	return c.base.Begin() //nolint:staticcheck // driver.Conn requires Begin; a wrapper must forward it
+	base, err := c.base.Begin() //nolint:staticcheck // driver.Conn requires Begin; a wrapper must forward it
+	if err != nil {
+		return nil, err
+	}
+	return &tx{f: c.f, base: base}, nil
+}
+
+// PrepareContext is [driver.ConnPrepareContext].
+//
+// database/sql prefers it over Prepare when a Conn offers it. Both are one
+// driver call, so implementing it changes no count -- but NOT implementing it
+// would drop the caller's context, and a wrapper that silently removes
+// cancellation is a wrapper that changes the program under test.
+func (c *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	if c.f.trip() {
+		return nil, ErrInjected
+	}
+	p, ok := c.base.(driver.ConnPrepareContext)
+	if !ok {
+		// The base does not offer it, so neither can this wrapper honestly.
+		// Falling back to Prepare here would drop ctx exactly as not
+		// implementing it would, and it would hide that fact behind a method
+		// that claims the capability.
+		st, err := c.base.Prepare(query)
+		if err != nil {
+			return nil, err
+		}
+		return &stmt{f: c.f, base: st}, nil
+	}
+	st, err := p.PrepareContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return &stmt{f: c.f, base: st}, nil
+}
+
+// BeginTx is [driver.ConnBeginTx].
+func (c *conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	if c.f.trip() {
+		return nil, ErrInjected
+	}
+	b, ok := c.base.(driver.ConnBeginTx)
+	if !ok {
+		// Same SA1019 reason as conn.Begin: the base offers only the deprecated
+		// method, so forwarding to it is the only honest fallback.
+		base, err := c.base.Begin() //nolint:staticcheck // the base offers only the deprecated Begin
+		if err != nil {
+			return nil, err
+		}
+		return &tx{f: c.f, base: base}, nil
+	}
+	base, err := b.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &tx{f: c.f, base: base}, nil
+}
+
+// Ping is [driver.Pinger]. It counts, because a caller asks for it.
+//
+// Without it, database/sql falls back to "is a connection available", so
+// db.Ping would report success against a driver whose Ping fails. That is a
+// wrapper hiding a failure the unwrapped driver reports.
+func (c *conn) Ping(ctx context.Context) error {
+	if c.f.trip() {
+		return ErrInjected
+	}
+	p, ok := c.base.(driver.Pinger)
+	if !ok {
+		return nil
+	}
+	return p.Ping(ctx)
+}
+
+// ResetSession is [driver.SessionResetter], and it is the one forwarded
+// operation that does NOT count.
+//
+// THIS IS A DELIBERATE EXCEPTION, and it is the opposite of the rule Begin
+// follows. The pool calls ResetSession, not the caller, and it decides when
+// from its own state: whether a connection was reused, how long it sat, what
+// else the program did. Counting it would make the operation index depend on
+// pool timing, so the N-th operation would be a different operation between
+// two runs of the same scenario -- which is the exact property fork 2 exists
+// to protect.
+//
+// It is forwarded rather than omitted. Omitting it would stop database/sql
+// calling the base driver's reset at all, so the driver under test would keep
+// state across pooled uses that it does not keep unwrapped.
+func (c *conn) ResetSession(ctx context.Context) error {
+	r, ok := c.base.(driver.SessionResetter)
+	if !ok {
+		return nil
+	}
+	return r.ResetSession(ctx)
+}
+
+// stmt is one prepared statement, whose operations continue the same count.
+type stmt struct {
+	f    *Fault
+	base driver.Stmt
+}
+
+// NumInput does not count. It is a property of the statement, not an operation
+// on the database: database/sql calls it to check the argument count before it
+// performs anything, and a driver answers from memory.
+func (s *stmt) NumInput() int { return s.base.NumInput() }
+
+// Close counts, and closes the real statement whether or not it trips, for the
+// same reason conn.Close does.
+func (s *stmt) Close() error {
+	tripped := s.f.trip()
+	err := s.base.Close()
+	if tripped {
+		return ErrInjected
+	}
+	return err
+}
+
+func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
+	if s.f.trip() {
+		return nil, ErrInjected
+	}
+	return s.base.Exec(args)
+}
+
+func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
+	if s.f.trip() {
+		return nil, ErrInjected
+	}
+	return s.base.Query(args)
+}
+
+// tx is one transaction.
+//
+// Commit and Rollback both count. A caller that ignores the error from either
+// is the defect class this package exists to find, and a failed Commit is the
+// sharpest of them: the program believes the data is durable and it is not.
+type tx struct {
+	f    *Fault
+	base driver.Tx
+}
+
+func (x *tx) Commit() error {
+	if x.f.trip() {
+		return ErrInjected
+	}
+	return x.base.Commit()
+}
+
+func (x *tx) Rollback() error {
+	if x.f.trip() {
+		return ErrInjected
+	}
+	return x.base.Rollback()
 }
 
 // trip counts one operation under the lock.
