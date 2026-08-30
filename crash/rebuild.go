@@ -5,13 +5,16 @@ import "fmt"
 // unit is a byte range that a crash point can act on. entry names which
 // write it belongs to, from and to bound the range within that write's own
 // data (not the file offset), and sect names the sector it falls in when a
-// Model splits by sector. Task 8 gives it behaviour; this task only needs
-// the shape, because replay's signature already carries []unit.
+// Model splits by sector.
 type unit struct {
 	entry    int
 	from, to int64
 	sect     int
 }
+
+// whole reports whether u covers its entry entirely -- either a metadata
+// entry, which never splits, or a write that Model chose not to split.
+func (u unit) whole() bool { return u.from == 0 && u.to == 0 }
 
 // replay applies the entries named by present, in log order, to a copy of
 // snap, and returns the resulting tree.
