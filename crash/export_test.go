@@ -42,3 +42,14 @@ func Entries(r *Recorder) []Entry {
 
 // Failure exposes the held refusal to tests.
 func Failure(r *Recorder) error { return r.failure() }
+
+// Needs exposes each entry's dependency list, in entry order.
+func Needs(r *Recorder) [][]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([][]int, len(r.entries))
+	for i, e := range r.entries {
+		out[i] = append([]int(nil), e.needs...)
+	}
+	return out
+}

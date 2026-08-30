@@ -121,6 +121,10 @@ func (r *Recorder) add(e entry) int {
 func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.File, error) {
 	r.mu.Lock()
 	p, _ := r.rel(name)
+	// existedBefore must run before the base call below: O_CREATE can bring p
+	// into existence, and a Stat taken after that call would see the effect of
+	// THIS call rather than what came before it.
+	existed := r.existedBefore(p)
 	r.mu.Unlock()
 
 	f, err := r.base.OpenFile(name, flag, perm)
@@ -150,13 +154,8 @@ func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.Fi
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	existed := true
-	if _, seen := r.origin[p]; !seen {
-		// It may still have existed in the snapshot. Task 4 refines this.
-		existed = flag&os.O_CREATE == 0
-	}
 	switch {
-	case !existed && flag&os.O_CREATE != 0:
+	case flag&os.O_CREATE != 0 && !existed:
 		n := r.add(entry{k: kCreate, path: p})
 		r.origin[p] = n
 	default:
@@ -164,6 +163,18 @@ func (r *Recorder) OpenFile(name string, flag int, perm os.FileMode) (faultfs.Fi
 	}
 
 	return &file{r: r, base: f, path: p, dir: isDir}, nil
+}
+
+// existedBefore reports whether p was present when the caller's operation
+// began. A path this run created is not durable until something depends on
+// its create entry; a path already on disk arrived from the snapshot and is
+// durable by construction, so nothing needs its creation.
+//
+// Task 4 answers this from the snapshot; until then, the base is asked
+// directly, which is bookkeeping and therefore takes no index.
+func (r *Recorder) existedBefore(p string) bool {
+	_, err := r.base.Stat(filepath.Join(r.root, filepath.FromSlash(p)))
+	return err == nil
 }
 
 func (r *Recorder) Remove(name string) error {
