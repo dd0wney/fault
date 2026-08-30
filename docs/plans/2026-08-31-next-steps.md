@@ -161,9 +161,27 @@ the ordering note at the end.
 ### 5. `Observed()`, and the limit written into `crash/doc.go`
 
 The total bypass is already refused: `crash/run.go:54` returns `errNoMutations`.
-The partial bypass is the gap, and it is silent. A scenario that writes one path
-through the seam and another around it produces a non-empty record, builds
-states, and passes without saying anything about what it never saw.
+
+**CORRECTED 2026-08-31, after measuring it.** The claim this paragraph carried
+was that a partial bypass is silent. That is wrong, and the correction narrows
+the task rather than removing it. Four shapes, all measured against `plan`:
+
+| The bypass | `plan` |
+|---|---|
+| adds a name under the record root | **refuses** — the replay control catches it |
+| writes a name under the root, then removes it | passes, silent |
+| writes outside the record root | passes, silent |
+| rewrites a recorded path with identical bytes | passes, silent |
+
+So the honest statement is that a bypass which leaves the recorded tree
+IDENTICAL is silent. `checkReplay` compares the whole replayed record with
+`readTree(root)`, so anything that changes that tree is already loud. The third
+row is the ordinary shape and the live graphdb one, because the control reads
+the record root alone and never looks anywhere else.
+
+This is the plan's own instance of the failure it was written about: a claim
+about code, believed without opening the code. The paragraph was accurate about
+`errNoMutations` and wrong about what the OTHER guard already covered.
 
 The precedent is `fs.Outstanding()` from pull request #4. Expose the fact, and
 let the caller assert. The library must not decide what "reached" means.
