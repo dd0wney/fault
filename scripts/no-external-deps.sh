@@ -15,7 +15,7 @@
 # Usage:
 #   scripts/no-external-deps.sh                  # check this module
 #   scripts/no-external-deps.sh --root DIR       # check the module in DIR
-#   go list -deps ./... | scripts/no-external-deps.sh -   # check a supplied list
+#   go list -deps -test ./... | scripts/no-external-deps.sh -   # a supplied list
 #
 # Exit codes:
 #   0  standard library only
@@ -85,8 +85,11 @@ esac
 if [ "$STDIN" = 1 ]; then
   DEPS="$(cat)"
 else
-  DEPS="$(cd "$ROOT" && go list -deps ./... 2>&1)" || {
-    echo "no-external-deps: 'go list -deps' failed:" >&2
+  # -test, because `go list -deps` alone omits every test import, and a test
+  # file is exactly where a third-party driver arrives. The gate was correct
+  # about a graph that excluded the file it most needed to read.
+  DEPS="$(cd "$ROOT" && go list -deps -test ./... 2>&1)" || {
+    echo "no-external-deps: 'go list -deps -test' failed:" >&2
     echo "$DEPS" >&2
     exit 2
   }
@@ -97,6 +100,30 @@ if [ -z "$DEPS" ]; then
   exit 2
 fi
 
+# -test adds three shapes that a plain module-path anchor cannot read. Measured
+# on this module: 108 packages become 148 lines.
+#
+#   github.com/dd0wney/fault/crash [github.com/dd0wney/fault/crash.test]
+#   github.com/dd0wney/fault/crash.test
+#   github.com/dd0wney/fault_test
+#
+# The first is a package recompiled in a test context. The trailing " [...]" is
+# metadata saying WHY the package is listed and is not part of any import path,
+# so it is removed here once rather than tolerated by every rule downstream.
+# Removing it makes the list duplicate itself, so sort -u follows.
+#
+# The second is the synthetic test binary. The third is a package's external
+# test package. Both are the checked module's own code under a name the
+# toolchain generates, so the anchor below accepts them. It does not blanket
+# drop "*.test", which would also hide a genuine external module whose path
+# ends that way.
+#
+# The third shape occurs for the ROOT package only: in
+# github.com/dd0wney/fault/alloc_test the "/" arrives first and the plain
+# anchor already matches it. A repair tested against one sub-package would look
+# complete and would not be.
+DEPS="$(printf '%s\n' "$DEPS" | sed 's/ \[.*\]$//' | grep -v '^$' | sort -u)"
+
 # grep reads "." as any character, and every module path has dots in it. Without
 # this escape, "github.com/dd0wney/fault" would also match "githubXcom/...".
 # The "lookalike module path" selftest row guards the other direction: a path
@@ -104,7 +131,7 @@ fi
 MODULE_RE="$(printf '%s' "$MODULE" | sed 's/[.[\*^$]/\\&/g')"
 
 EXTERNAL="$(printf '%s\n' "$DEPS" \
-  | grep -vE "^${MODULE_RE}(/|$)" \
+  | grep -vE "^${MODULE_RE}(/.*)?(_test|\.test)?$" \
   | awk -F/ '$1 ~ /\./ { print }')"
 
 if [ -n "$EXTERNAL" ]; then
