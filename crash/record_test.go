@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -464,6 +465,61 @@ func TestASyncThatTheBaseRefusedIsNotRecorded(t *testing.T) {
 		}
 	}
 	t.Errorf("no state is named %q; plan gave %q — a failed sync made the write durable", want, names)
+}
+
+// MkdirAll creates every missing level, and the record has to say so. Recording
+// only the deepest path left the replay with no entry for the parents, so the
+// positive control refused the whole record with "missing: a" and the package
+// could describe no scenario that builds a directory tree.
+func TestMkdirAllRecordsOneEntryPerLevelItCreates(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(faultfs.OS(), dir)
+
+	if err := rec.MkdirAll(filepath.Join(dir, "a", "b"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	var mkdirs []crash.Entry
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "mkdir" {
+			mkdirs = append(mkdirs, e)
+		}
+	}
+	if len(mkdirs) != 2 {
+		t.Fatalf("recorded %d mkdir entries for a/b, want 2 (one per level): %+v", len(mkdirs), mkdirs)
+	}
+	if mkdirs[0].Path != "a" || mkdirs[1].Path != "a/b" {
+		t.Errorf("recorded %q then %q, want \"a\" then \"a/b\" — outermost first", mkdirs[0].Path, mkdirs[1].Path)
+	}
+
+	needs := crash.Needs(rec)
+	if len(needs[0]) != 0 {
+		t.Errorf("the mkdir of a needs %v, want none — its parent is the record root", needs[0])
+	}
+	if len(needs[1]) != 1 || needs[1][0] != mkdirs[0].N {
+		t.Errorf("the mkdir of a/b needs %v, want [%d] — the mkdir of a", needs[1], mkdirs[0].N)
+	}
+
+	// A level that already exists is not created again, so it must not be
+	// recorded again: two origins for one name is a record no crash matches.
+	if err := rec.MkdirAll(filepath.Join(dir, "a", "c"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "mkdir" {
+			paths = append(paths, e.Path)
+		}
+	}
+	want := []string{"a", "a/b", "a/c"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Errorf("mkdir paths = %q, want %q", paths, want)
+	}
+
+	// This is what the reviewer measured failing, as "missing: a".
+	if _, err := crash.States(rec, crash.Model{}); err != nil {
+		t.Fatalf("the control refused a record that builds a directory tree: %v", err)
+	}
 }
 
 // A rename the base refused changes nothing, so it must not enter the record.
