@@ -1,8 +1,10 @@
 package crash_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -340,4 +342,188 @@ func TestOTruncOnAnExistingFileIsRecordedAsATruncate(t *testing.T) {
 		return
 	}
 	t.Fatalf("no state is named %q; plan gave %q", want, got)
+}
+
+// The reviewer's measured case, and the worst failure this package can have:
+// it reported a finding against correct code.
+//
+// `defer fsys.Remove(tmp)` after a successful rename is the ordinary idiom. The
+// remove fails with ENOENT, because the rename already moved the name. The
+// recorder recorded it anyway, so the log held a remove that never happened,
+// and the walk built a state named after=a:remove1/lost=a:rename1 in which
+// NEITHER name holds the value. No power cut can produce that state, so every
+// finding against it is noise, and noise trains a reader to ignore the tool.
+func TestARemoveThatTheBaseRefusedIsNotRecorded(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(faultfs.OS(), dir)
+
+	a := filepath.Join(dir, "a")
+	b := filepath.Join(dir, "b")
+
+	f, err := rec.OpenFile(a, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Rename(a, b); err != nil {
+		t.Fatal(err)
+	}
+
+	// The idiom. The rename already moved the name, so this fails.
+	if err := rec.Remove(a); err == nil {
+		t.Fatal("the remove succeeded, so this test says nothing about a failed one")
+	}
+
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "remove" {
+			t.Errorf("a remove the base refused is in the record: %+v", e)
+		}
+	}
+
+	states, err := crash.States(rec, crash.Model{})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if len(states) == 0 {
+		t.Fatal("no states at all, so the name check below proves nothing")
+	}
+	for _, s := range states {
+		// after=a:remove1/lost=a:rename1 is the exact state the reviewer
+		// measured: the remove is the crash point, the rename is lost, and
+		// neither a nor b holds the value.
+		if strings.Contains(s.Name, ":remove") {
+			t.Errorf("state %q names a remove the run never performed", s.Name)
+		}
+	}
+}
+
+// failSyncFS hands back a handle whose Sync always fails. A sync that failed
+// made nothing durable, so recording it lets the model believe a pending write
+// reached the disk and drops the state where it did not. The reviewer reasoned
+// this and could not measure it, because the base is a real filesystem.
+type failSyncFS struct {
+	faultfs.FS
+}
+
+func (s failSyncFS) OpenFile(name string, flag int, perm os.FileMode) (faultfs.File, error) {
+	f, err := s.FS.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return failSyncFile{f}, nil
+}
+
+type failSyncFile struct {
+	faultfs.File
+}
+
+func (s failSyncFile) Sync() error { return errors.New("the disk refused the sync") }
+
+// A Sync whose base call failed must not enter the record, or the model makes
+// every pending entry on that handle durable and stops generating the states a
+// crash really can leave.
+func TestASyncThatTheBaseRefusedIsNotRecorded(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(failSyncFS{faultfs.OS()}, dir)
+
+	f, err := rec.OpenFile(filepath.Join(dir, "a"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Sync(); err == nil {
+		t.Fatal("the sync succeeded, so this test says nothing about a failed one")
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "sync" {
+			t.Errorf("a sync the base refused is in the record: %+v", e)
+		}
+	}
+
+	// The consequence, not only the entry: the write is still pending, so the
+	// state that loses it must still be built.
+	names, err := crash.Plan(rec, crash.Model{})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	const want = "after=a:write1/lost=a:write1"
+	for _, n := range names {
+		if n == want {
+			return
+		}
+	}
+	t.Errorf("no state is named %q; plan gave %q — a failed sync made the write durable", want, names)
+}
+
+// A rename the base refused changes nothing, so it must not enter the record.
+// Recording it moves the origin of a name that never moved, and every later
+// dependency hangs off an operation that did not happen.
+func TestARenameThatTheBaseRefusedIsNotRecorded(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(faultfs.OS(), dir)
+
+	if err := rec.Rename(filepath.Join(dir, "missing"), filepath.Join(dir, "data")); err == nil {
+		t.Fatal("the rename succeeded, so this test says nothing about a failed one")
+	}
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "rename" {
+			t.Errorf("a rename the base refused is in the record: %+v", e)
+		}
+	}
+}
+
+// A MkdirAll the base refused creates nothing, so it must not enter the record.
+func TestAMkdirAllThatTheBaseRefusedIsNotRecorded(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := crash.Record(faultfs.OS(), dir)
+
+	if err := rec.MkdirAll(filepath.Join(dir, "a", "b"), 0o700); err == nil {
+		t.Fatal("the mkdir succeeded, so this test says nothing about a failed one")
+	}
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "mkdir" {
+			t.Errorf("a mkdir the base refused is in the record: %+v", e)
+		}
+	}
+}
+
+// A Truncate the base refused changes no byte, so it must not enter the record.
+// A handle opened read-only cannot be truncated.
+func TestATruncateThatTheBaseRefusedIsNotRecorded(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "a")
+	if err := os.WriteFile(name, []byte("0123"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := crash.Record(faultfs.OS(), dir)
+
+	f, err := rec.OpenFile(name, os.O_RDONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(1); err == nil {
+		t.Fatal("the truncate succeeded on a read-only handle, so this test says nothing")
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "truncate" {
+			t.Errorf("a truncate the base refused is in the record: %+v", e)
+		}
+	}
 }

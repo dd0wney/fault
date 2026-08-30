@@ -26,6 +26,11 @@ func (u unit) whole() bool { return u.from == 0 && u.to == 0 }
 // would make the generator's defect look like the store's, and every state
 // built after it would be a fiction.
 //
+// A remove is held to the same rule. It reads as the exception, because
+// deleting an absent key is harmless to a map, and that is exactly why the
+// asymmetry hid a real defect: the recorder logged a remove the base had
+// refused, and no control could see it.
+//
 // A byte range named in lost is NOT zeroed. It keeps whatever the replay
 // already had there, which is the truthful model: the prior content is
 // already in the record, as an earlier entry. See rebuild_test.go for the
@@ -67,6 +72,14 @@ func replay(snap tree, entries []entry, present map[int]bool, lost map[int][]uni
 			delete(out, e.path)
 			out[e.to] = n
 		case kRemove:
+			// A remove is refused on an absent path exactly as a write, a
+			// truncate and a rename are. Deleting an absent key in silence is
+			// what let a phantom remove -- one the base itself refused -- reach
+			// the walk and build a state no power cut can produce, with the
+			// control none the wiser.
+			if _, ok := out[e.path]; !ok {
+				return nil, fmt.Errorf("crash: entry %d removes %q, which no present entry created", e.n, e.path)
+			}
 			delete(out, e.path)
 		}
 	}
