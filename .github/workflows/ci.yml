@@ -78,6 +78,20 @@ jobs:
       - name: no dependency outside the standard library
         run: ./scripts/no-external-deps.sh
 
+      # The tools module was outside this gate entirely, the same way it was
+      # outside the mutation gate before PR #6. A separate module is invisible
+      # to `go list ./...` from the root, so nothing reported the gap -- the
+      # gate measured exactly what it was told, and what it was told was
+      # incomplete. It costs one line now that the gate takes --root.
+      #
+      # This step sits in `checks` rather than in `tools` on purpose: the
+      # selftest above runs in this job, so the gate proves it can report a
+      # violation before either of its results is believed. In a parallel job
+      # a green gate would print the same thing whether or not its instrument
+      # worked. Measured 2026-08-31: 132 packages, standard library only.
+      - name: no dependency outside the standard library, tools module
+        run: ./scripts/no-external-deps.sh --root tools
+
       # Trivially clean while the module has zero dependencies, which is the
       # point: it costs one job now and starts earning the moment that changes.
       #
