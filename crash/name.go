@@ -83,13 +83,55 @@ func unitName(byIndex map[int]entry, u unit) string {
 
 // safe removes the characters that would change a subtest name's structure. A
 // slash would create another level of nesting, which go test -run cannot be
-// pointed at as one unit, so it is turned into a pipe instead. Go's own test
-// runner already turns whitespace into underscores when it builds the actual
-// subtest name; doing it here as well keeps this package's own rendering of
-// the name (in a failure message, say) consistent with what -run will see.
+// pointed at as one unit, so it is turned into a pipe instead.
+//
+// The whitespace pass mirrors testing.rewrite, in $GOROOT/src/testing/match.go:
+// that function is what actually builds the subtest name -run matches
+// against, and it replaces every rune in its own isSpace set -- not only the
+// ASCII space -- with an underscore. Doing the ASCII case alone here would
+// make a path holding a tab or a newline render one way in this package's
+// own output and a different way in the name go test uses, and the two would
+// stop matching, which is the one property this whole file exists to keep.
+//
+// This does not mirror testing.rewrite's other half, which escapes
+// non-printable runes with strconv.QuoteRune. A file name a scenario chose
+// is close to always printable, and reproducing that escaping byte for byte
+// buys no case this package's callers are expected to hit.
 func safe(p string) string {
 	p = strings.ReplaceAll(p, "/", "|")
-	return strings.ReplaceAll(p, " ", "_")
+
+	var b strings.Builder
+	b.Grow(len(p))
+	for _, r := range p {
+		if isTestSpace(r) {
+			b.WriteByte('_')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// isTestSpace is testing.isSpace, copied rather than approximated with
+// unicode.IsSpace: Go's own comment on the original says it is deliberately
+// NOT the same as the Unicode Z class, so deriving this from a general
+// Unicode predicate would drift from what -run actually does.
+func isTestSpace(r rune) bool {
+	if r < 0x2000 {
+		switch r {
+		case '\t', '\n', '\v', '\f', '\r', ' ', 0x85, 0xA0, 0x1680:
+			return true
+		}
+	} else {
+		if r <= 0x200a {
+			return true
+		}
+		switch r {
+		case 0x2028, 0x2029, 0x202f, 0x205f, 0x3000:
+			return true
+		}
+	}
+	return false
 }
 
 // stateName names the set of units a state lost.
