@@ -57,6 +57,14 @@ expect_root() {
 
 expect_root 1 "a test-only external import" "$DATA/testonly-external"
 
+# The gate now derives the module path instead of carrying one in its text, so
+# it needs a probe that can say "there is no module here". `go list -m` cannot:
+# outside a module it prints "command-line-arguments" and exits 0. This row is
+# the control for the probe that replaced it.
+NOTAMODULE="$(mktemp -d)"
+trap 'rm -rf "$NOTAMODULE"' EXIT
+expect_root 2 "a root that is not a module" "$NOTAMODULE"
+
 if [ "$FAILURES" != 0 ]; then
   echo "selftest: $FAILURES fixture(s) wrong — the gate is not trustworthy" >&2
   exit 1
