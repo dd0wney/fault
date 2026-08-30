@@ -21,13 +21,20 @@ func TestAUnitIsNamedByFileOperationAndOccurrence(t *testing.T) {
 	}
 }
 
+// The range [4096,8192) with sect=1 does not discriminate a carried sect
+// from a derived one: from/(to-from) is 4096/4096 = 1, the same answer. The
+// short final sector of a 10000-byte write at sector 4096 does discriminate:
+// from=8192, to=10000, and 8192/(10000-8192) = 8192/1808 = 4, not 2. See
+// units_test.go's TestSectIsCarriedNotDerivedFromTheRange, which guards the
+// same case on the side that PRODUCES sect; this guards the side that
+// CONSUMES it and reaches the subtest name.
 func TestASectorUnitCarriesItsIndex(t *testing.T) {
-	entries := []entry{{n: 1, k: kWrite, path: "a", off: 0, data: make([]byte, 8192)}}
+	entries := []entry{{n: 1, k: kWrite, path: "a", off: 0, data: make([]byte, 10000)}}
 	byIndex := index(entries)
 
-	got := unitName(byIndex, unit{entry: 1, from: 4096, to: 8192, sect: 1})
-	if !strings.HasSuffix(got, ".s1") {
-		t.Errorf("unitName = %q, want a .s1 suffix for the second sector", got)
+	got := unitName(byIndex, unit{entry: 1, from: 8192, to: 10000, sect: 2})
+	if !strings.HasSuffix(got, ".s2") {
+		t.Errorf("unitName = %q, want a .s2 suffix -- sect must be read from the unit, not derived from from/(to-from)", got)
 	}
 }
 
@@ -39,6 +46,24 @@ func TestAStateNameCarriesNoSlash(t *testing.T) {
 
 	if got := stateName(byIndex, []unit{{entry: 1}}); strings.Contains(got, "/") {
 		t.Errorf("stateName = %q, which contains a slash and would nest", got)
+	}
+}
+
+// Go's own testing.rewrite (src/testing/match.go) replaces every rune in its
+// isSpace set with an underscore when it builds the subtest name -run
+// actually matches -- not only the ASCII space. A tab left untouched here
+// would render one way in this package's own name and a different way in
+// the name go test uses, and the two would stop matching.
+func TestSafeReplacesATabLikeGosOwnRewriteDoes(t *testing.T) {
+	entries := []entry{{n: 1, k: kWrite, path: "a\tb"}}
+	byIndex := index(entries)
+
+	got := unitName(byIndex, unit{entry: 1})
+	if strings.Contains(got, "\t") {
+		t.Errorf("unitName = %q, still carries a literal tab", got)
+	}
+	if want := "a_b:write1"; got != want {
+		t.Errorf("unitName = %q, want %q", got, want)
 	}
 }
 
