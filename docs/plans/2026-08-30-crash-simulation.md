@@ -1061,11 +1061,31 @@ func Record(base faultfs.FS, root string) *Recorder {
 	return r
 }
 
-func (r *Recorder) existedBefore(p string) bool {
-	_, ok := r.snap[p]
-	return ok
+func (r *Recorder) exists(p string) bool {
+	return r.live[p]
 }
 ```
+
+**Not `existedBefore`, and not the snapshot.** The brief for Task 3 asked "was p
+present when `Record` was called", answered from `r.snap`. `OpenFile` does not
+need that question. It needs "does p exist RIGHT NOW", so that an `O_CREATE`
+open records a create only when it actually creates something.
+
+The two agree at the start of a run and diverge the moment the run changes the
+namespace, in two ways that both matter:
+
+- Two concurrent opens on one new path. The first records a create; the second
+  asks the snapshot, does not find the path, and records a second one.
+- A snapshot path that is removed and then re-created. It is still in `snap`, so
+  no create entry is recorded for the re-creation, the later write carries no
+  dependency, and the replay fails with "writes to a path no present entry
+  created".
+
+So the `Recorder` carries a `live map[string]bool`, seeded at `Record` from the
+snapshot's keys and updated at all five sites that change the namespace: create
+and mkdir add, remove deletes, and rename deletes the old name and adds the new.
+`origin` stays as it is — it answers a different question, which entry index made
+a path exist — and the two must be updated together or they drift.
 
 Add the `snap tree` field to `Recorder`.
 
