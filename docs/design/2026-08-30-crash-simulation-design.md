@@ -152,11 +152,12 @@ or mkdir durable as soon as it returns.
 The strict rule is the default on purpose. A false alarm costs a reader an hour.
 A missed defect costs data.
 
-### 5.2 The recorder tracks the file offset, and that is only sound without `Seek`
+### 5.2 The recorder tracks the file offset, and an interface without `Seek` is not enough on its own
 
 `fs.File` is `Read`, `Write`, `Sync`, `Truncate` and `Close`. It has no `Seek`
 and no `WriteAt`, so a handle's offset moves only by the bytes its reads and
-writes carry, and the recorder can track it by addition.
+writes carry, and the recorder can track it by addition **once it knows where
+the handle started**.
 
 **That is a load-bearing invariant, not an implementation detail.** If
 `fault/fs` ever gains `Seek` or a positional write, every recorded offset after
@@ -164,6 +165,36 @@ the first seek is wrong, and the record stays internally consistent while
 describing a file the scenario never wrote. §9.2's control catches it -- the
 whole-record replay would stop matching the real directory -- which is the
 reason that control is worth its cost.
+
+**Corrected 2026-08-30. The argument had a hole, and a flag that ships today
+went through it.** An earlier version of this section reasoned only about the
+methods on `fs.File`, and concluded that a handle always starts at offset 0.
+`os.O_APPEND` is passed to `OpenFile`, not called on the handle, so no method on
+the interface names it -- and it puts every write at the current end of the
+file. The recorder started at 0 anyway, so an append onto a file that already
+held bytes was recorded on top of them. Measured: §9.2's control failed with
+`contents differ: wal (want 8 bytes, got 4 bytes)`.
+
+The rule is therefore in two parts, not one:
+
+1. **Where the handle starts.** Zero, except under `os.O_APPEND`, where it is
+   the size the file holds at the moment of the open. The recorder asks the base
+   for that size directly. That is its own bookkeeping, not an operation the
+   scenario performed, so it takes no entry index -- the same rule the `isDir`
+   `Stat` already obeys. A size the base will not give is a held refusal, not a
+   guess: every offset recorded through that handle would be wrong, and a wrong
+   record in silence is the failure this package exists to prevent.
+2. **How the offset moves.** By addition of the bytes the handle's own reads and
+   writes carry, which is sound only while the interface has no `Seek` and no
+   `WriteAt`.
+
+Two `O_APPEND` handles on one file, held at the same time, defeat part 2: each
+adds its own bytes and the kernel decides the real end. That is out of scope,
+and §9.2's control is what reports it.
+
+The lesson generalises past this one flag. A claim about an interface's methods
+is not a claim about its calls. `OpenFile` takes an `int` of flags, and any of
+them may move state the methods never mention.
 
 This is not hypothetical. The graphdb project's `pkg/vfs.File` embeds
 `io.Seeker` and uses it at five production sites, including an SSTable writer
@@ -192,6 +223,26 @@ type entry struct {
 records its own count. The recorder reports the world truthfully, in the same
 way `fs.Write` lets a real error outrank an injected one.
 
+**An entry is appended only after the base call returns `nil`.** A call the
+filesystem refused changed nothing, so a record that holds it describes a run
+that did not happen, and every state built from it reads exactly like a finding.
+
+**Corrected 2026-08-30, measured.** `Remove`, `Rename`, `MkdirAll`, `Truncate`
+and `Sync` recorded before the base call and kept the entry when it failed. The
+ordinary idiom `defer fsys.Remove(tmp)` after a successful rename fails with
+`ENOENT`, so a correct store got a failing subtest named
+`after=a:remove1/lost=a:rename1`, in which neither name holds the value. No
+power cut can produce that state. The same shape under-reported through `Sync`:
+a sync whose base call failed made the model treat pending entries as durable
+and dropped states a crash really can leave.
+
+The lock still spans the base call. A check-then-act race there was fixed once
+already and has a regression test; only the decision moved.
+
+`replay` refuses a `remove` of a path no present entry created, exactly as it
+refuses a write, a truncate or a rename. Deleting an absent key is harmless to a
+map, which is why the asymmetry hid the defect above from §9.2's control.
+
 ### 6.1 `needs`, and why a state without it is noise
 
 `needs` decides whether a candidate state is **legal**. A crash cannot produce a
@@ -201,7 +252,22 @@ every entry that names it in `needs`.
 
 - A write needs the create of the file it writes into.
 - A rename needs the create of the name it moves.
+- A create needs the `mkdir` of the directory that holds the name, where this
+  run made that directory. A rename needs the same for the directory it moves
+  **into**: it places a name in a directory exactly as a create does.
 - Two writes that overlap keep their log order, which replay gives at no cost.
+
+`MkdirAll` records **one entry per level it actually creates**, outermost first,
+each depending on the level above it. A single entry for the deepest path
+described a directory with no directory above it, and §9.2's control refused
+every such record with `missing: a` -- so the package could describe no scenario
+that builds a directory tree. A level that already exists takes no entry, or the
+name would carry two origins and a crash would match neither.
+
+**Added 2026-08-30, measured.** Without the parent dependency the walk built
+`after=d|a:create1/lost=d:mkdir1`, which keeps a file inside a directory whose
+creation was lost. `tree.writeTo` re-creates a missing parent, so no check can
+tell that state from `lost=none`, and the name asserts something untrue.
 
 A file that already existed when `Record` was called has no create entry, so
 nothing depends on one. It arrives from the §6.2 snapshot and is durable by
@@ -572,7 +638,8 @@ documentation.
 
 §5.2 states that tracking the offset by addition is sound only because `fs.File`
 has no `Seek`. Under this design that stays true of the INTERFACE, and the
-wrapper's rule becomes: the offset is the last seek result plus the bytes moved
+wrapper's rule becomes: the offset is where the handle started -- zero, or the
+size an `O_APPEND` open found -- or the last seek result, plus the bytes moved
 since. The whole-record control of §9.2 is what catches a mistake in it, and that
 control is now the reason this extension is safe to add at all.
 
