@@ -1,8 +1,9 @@
 # `fault/sql` — design specification
 
 - **Date**: 2026-08-31
-- **Status**: DRAFT. Six forks are answered below with a recommendation each.
-  None is approved for implementation until the recommendations are confirmed.
+- **Status**: approved for implementation, 2026-08-31. The six forks below
+  are answered, and each answer is confirmed. Tasks 8 to 14 of
+  `docs/plans/2026-08-31-next-steps.md` are unblocked.
 - **Module**: `github.com/dd0wney/fault`
 - **Package**: `github.com/dd0wney/fault/sql`
 - **Scope**: the adapter only. It needs `Points` and `Trip` from the frozen
@@ -81,8 +82,7 @@ by the time the caller is told.
 3. Refuse it: return a plain error by default, and make the sweep FAIL if an
    injected error is ever wrapped into an `ErrBadConn` by the code under test.
 
-**Recommendation: option 1 for v0, with the refusal of option 3 added as a
-check.** The adapter returns an error that is deliberately not `ErrBadConn`,
+**DECIDED: option 1 for v0, with the refusal of option 3 added as a check.** The adapter returns an error that is deliberately not `ErrBadConn`,
 and it asserts that fact rather than assuming it, because a driver beneath the
 adapter could wrap it. The reason is the house rule that a false alarm costs a
 reader an hour and a wrong count costs the meaning of every result: an
@@ -111,7 +111,7 @@ global operation count is meaningless when several actors share it.
 3. A constructor that owns the setting: the adapter hands back the `*sql.DB`
    with `SetMaxOpenConns(1)` already applied.
 
-**Recommendation: option 3, with option 2 as the guard.** The constructor sets
+**DECIDED: option 3, with option 2 as the guard.** The constructor sets
 it, and the adapter still checks, because a caller can call
 `SetMaxOpenConns(10)` afterwards and nothing would say so. Setting it without
 checking is the "narrowing instrument" shape again: the adapter would be right
@@ -154,7 +154,7 @@ point moves. The adapter would be measuring itself.
    test that fails when the wrapped driver implements an interface the wrapper
    does not.
 
-**Recommendation: option 3.** The set that changes the call count is the set
+**DECIDED: option 3.** The set that changes the call count is the set
 that matters — `Execer`/`ExecerContext`, `Queryer`/`QueryerContext`,
 `ConnPrepareContext`, `ConnBeginTx`, `SessionResetter`, `Validator`,
 `NamedValueChecker`, `Pinger`. The rest can arrive later without moving an
@@ -184,7 +184,7 @@ test, and is not one.
    and that path is a real defect class: a caller that ignores `rows.Err()`.
 3. `Rows.Next` trips once per `Rows`, on a row the caller chooses.
 
-**Recommendation: option 3.** One trip per result set, at a row index the
+**DECIDED: option 3.** One trip per result set, at a row index the
 caller names, keeps the operation count proportional to the program's structure
 rather than to its data. It also keeps the count STABLE when the fixture data
 changes, which option 1 does not: adding a row to a test table would silently
@@ -207,7 +207,7 @@ established connections both in use and idle". It is the analogue of
 2. The adapter keeps its own count of connections it created and did not see
    closed.
 
-**Recommendation: option 2, and report both.** The two numbers answer different
+**DECIDED: option 2, and report both.** The two numbers answer different
 questions, and the difference between them is itself the finding. This is the
 same shape as `Recorder.Observed()` landed on this week: expose the fact and
 let the caller assert, because the library must not decide what "leaked" means
@@ -219,7 +219,7 @@ for someone else's pool configuration.
 it reads test imports too, so a driver imported from a `_test.go` file is
 caught. That was closed deliberately before this package, not by accident.
 
-**Recommendation.** A `driver.Driver` written by hand inside the module, in
+**DECIDED.** A `driver.Driver` written by hand inside the module, in
 `sql/internal/...` or behind an export test file. It must implement MORE
 interfaces than the adapter does, so that fork 3's assertion has something to
 detect. A test driver that implements exactly the wrapper's set would make that
@@ -230,8 +230,7 @@ target" defect the mutation script already warns about.
 
 ## 4. Limits, stated as plainly as `crash/doc.go`
 
-To be written against the confirmed answers. On the recommendations above it
-reads:
+`sql/doc.go` carries this text. On the confirmed answers it reads:
 
 - Nothing about `driver.ErrBadConn` retries. The adapter refuses to produce
   one, and asserts it did not.
