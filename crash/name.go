@@ -8,7 +8,16 @@ import (
 	"strings"
 )
 
-// maxNameLen bounds a state's subtest name. Provisional; Task 15 measures it.
+// maxNameLen bounds a state's subtest name. Above it the name becomes a count
+// and a hash, so the cap decides where a name stops being readable rather than
+// where the walk stops working.
+//
+// MEASURED 2026-08-30: over the four reference stores under Model{Sector: 4096}
+// and both metadata rulings, the longest untruncated name is 53 characters --
+// "lost=data.tmp:rename2+data.tmp:write1+data.tmp:write2", from noFileSync
+// under the POSIX rule. The longest single unit name in that run is 16
+// characters, so 80 holds the measured worst case and one more lost unit
+// beside it.
 const maxNameLen = 80
 
 // index builds the entry lookup every naming function needs.
