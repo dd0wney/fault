@@ -1,6 +1,7 @@
 package crash
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -462,6 +463,79 @@ func (f *file) Write(b []byte) (int, error) {
 // the disk still holds, and every state that a crash there could really leave
 // stops being generated. That is an under-report, and a missed defect is
 // invisible.
+// Seek and WriteAt are the OPTIONAL capabilities of spec §12. The recorder
+// offers both when its base does, and refuses otherwise, wrapping
+// errors.ErrUnsupported so the standard idiom detects it.
+//
+// Together they close the hole spec §5.2 named: the offset was tracked by
+// addition, which was sound only while nothing could move it except reads and
+// writes. The rule is now "the last seek result, plus the bytes moved since",
+// and the whole-record control of §9.2 is what catches a mistake in it.
+
+func (f *file) unsupported(op string) error {
+	return &os.PathError{
+		Op:   op,
+		Path: f.path,
+		Err:  fmt.Errorf("the recorded filesystem cannot %s: %w", op, errors.ErrUnsupported),
+	}
+}
+
+// Seek takes an index and records no state change, because it changes none.
+//
+// The offset comes from the BASE's answer, not from arithmetic here. io.Seeker
+// returns the new offset relative to the start of the file, so there is nothing
+// to model: no whence values, and no file size for SEEK_END.
+func (f *file) Seek(offset int64, whence int) (int64, error) {
+	s, ok := f.base.(interface {
+		Seek(offset int64, whence int) (int64, error)
+	})
+	if !ok {
+		return 0, f.unsupported("seek")
+	}
+
+	f.r.mu.Lock()
+	defer f.r.mu.Unlock()
+
+	n, err := s.Seek(offset, whence)
+	f.r.add(entry{k: kRead, path: f.path})
+	if err == nil {
+		f.off = n
+	}
+	return n, err
+}
+
+// WriteAt records the offset the CALLER gave and never touches the handle
+// position, which is what a positional write means.
+//
+// That is also why it costs the model nothing: the durability split, the loss
+// units, the closure and the replay all key on entry.off and do not care where
+// the offset came from.
+func (f *file) WriteAt(b []byte, off int64) (int, error) {
+	w, ok := f.base.(interface {
+		WriteAt(p []byte, off int64) (int, error)
+	})
+	if !ok {
+		return 0, f.unsupported("writeat")
+	}
+
+	f.r.mu.Lock()
+	defer f.r.mu.Unlock()
+
+	n, err := w.WriteAt(b, off)
+	if n > 0 {
+		data := make([]byte, n)
+		copy(data, b[:n])
+		f.r.add(entry{
+			k:     kWrite,
+			path:  f.path,
+			off:   off,
+			data:  data, // only what landed, never what was offered
+			needs: f.r.dependsOn(f.path),
+		})
+	}
+	return n, err
+}
+
 func (f *file) Sync() error {
 	f.r.mu.Lock()
 	defer f.r.mu.Unlock()

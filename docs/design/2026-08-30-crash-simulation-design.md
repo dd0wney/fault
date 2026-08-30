@@ -159,12 +159,23 @@ and no `WriteAt`, so a handle's offset moves only by the bytes its reads and
 writes carry, and the recorder can track it by addition **once it knows where
 the handle started**.
 
-**That is a load-bearing invariant, not an implementation detail.** If
-`fault/fs` ever gains `Seek` or a positional write, every recorded offset after
-the first seek is wrong, and the record stays internally consistent while
-describing a file the scenario never wrote. §9.2's control catches it -- the
-whole-record replay would stop matching the real directory -- which is the
-reason that control is worth its cost.
+**That is a load-bearing invariant, and §12 changed it.** The interface still
+carries neither method, but the WRAPPERS now offer both optionally, so the rule
+is no longer "the offset moves only by the bytes read and written". It is:
+
+> the offset is the LAST SEEK RESULT, plus the bytes moved since.
+
+A seek takes an index, records no state change, and sets the offset from the
+base's own answer -- `io.Seeker` returns the new offset relative to the start of
+the file, so nothing is modelled here: no whence values, and no file size for
+`SEEK_END`. A positional write records the offset the caller gave and never
+touches the handle position at all.
+
+If either is got wrong, the record stays internally consistent while describing
+a file the scenario never wrote. §9.2's control catches it -- the whole-record
+replay stops matching the real directory -- which is the reason that control is
+worth its cost, and it is now guarded by a scenario that writes a body, seeks to
+0 and rewrites the header.
 
 **Corrected 2026-08-30. The argument had a hole, and a flag that ships today
 went through it.** An earlier version of this section reasoned only about the
@@ -590,7 +601,7 @@ right — local gates do not cover Windows.
 
 ## 12. Positional writes and seeks, by optional interface
 
-**Decided 2026-08-30. Follow-up work, not part of v0's fifteen tasks.**
+**Decided and BUILT 2026-08-30.** Shipped after v0's fifteen tasks, on its own branch.
 
 A great deal of real storage code publishes a record by writing a body and then
 backpatching a header at offset 0, and a crash simulator that cannot model a
@@ -633,6 +644,23 @@ closure and the replay -- keys on `entry.off` and needs no change for either.
 `fault/fs.OS()` needs no change either: `*os.File` already satisfies the wider
 interface, which was confirmed by compiling it rather than by reading the
 documentation.
+
+### 12.3 The refusal satisfies the standard sentinel
+
+A base that cannot serve either operation gets an `*os.PathError` naming the
+operation and wrapping `errors.ErrUnsupported`, so `errors.Is(err,
+errors.ErrUnsupported)` is true.
+
+That is not decoration. The Go documentation for that sentinel is prescriptive:
+a method "should instead return an error including appropriate context that
+satisfies `errors.Is(err, errors.ErrUnsupported)`". A package-local sentinel
+alone leaves the reflex idiom returning false, so a caller concludes the
+operation succeeded.
+
+This exact defect was found in a downstream adapter on 2026-08-30 -- five of its
+own assertions passed against its own sentinel while the standard check
+returned false -- and a test here asserts the STANDARD sentinel specifically,
+not a local one.
 
 ### 12.2 What §5.2's invariant becomes
 
