@@ -180,17 +180,39 @@
 // answers are errors; the leak is in which error.
 //
 // Compare what two principals see, rather than asserting what either should
-// see:
+// see. This needs TWO sweeps, compared position by position:
 //
-//	for n, p := range fault.Sweep(t) {
-//		fsys := faultfs.New(p, faultfs.OS())
-//		existing := describe(guard.Check(fsys, bob, exists))
-//		absent := describe(guard.Check(fsys, bob, doesNotExist))
-//		if existing != absent {
+//	answers := func(target Resource) []string {
+//		var out []string
+//		for _, p := range fault.Sweep(t) {
+//			fsys := faultfs.New(p, faultfs.OS())
+//			out = append(out, describe(guard.Check(fsys, bob, target)))
+//		}
+//		return out
+//	}
+//
+//	existing, absent := answers(exists), answers(doesNotExist)
+//	for n := range existing {
+//		if existing[n] != absent[n] {
 //			t.Errorf("op %d: an unauthorised caller can tell the two apart: %q vs %q",
-//				n, existing, absent)
+//				n+1, existing[n], absent[n])
 //		}
 //	}
+//
+// Two sweeps, and not two calls inside one. A single Points counts across
+// BOTH calls, so arming operation N fails exactly one of them and never the
+// other. The two answers then differ on every pass by construction, and the
+// predicate reports a leak that is an artefact of where the ordinal landed.
+// An earlier version of this documentation showed the one-sweep form and was
+// wrong; it was caught by running it against a third-party application.
+//
+// Each sweep arms operation N of its OWN run, so comparing position n with
+// position n is meaningful. If the two principals perform different numbers of
+// operations, the lengths differ, and that is itself the leak.
+//
+// Give the comparison a control. Run it once with two inputs that SHOULD
+// differ -- a right password and a wrong one -- and confirm it says so. A
+// comparison that cannot report a difference cannot report a leak.
 //
 // Like the adapter predicate table, this asserts agreement rather than
 // correctness, so it cannot encode the same misunderstanding twice. It is worth
