@@ -186,7 +186,13 @@ func (testTx) Rollback() error { return nil }
 // mutation gate found them unreachable: every `if !ok` path in PrepareContext,
 // BeginTx, Ping and ResetSession survived, because the only test driver
 // implemented all four optional interfaces.
-type plainDriver struct{ pings int }
+type plainDriver struct {
+	// prepareErr and beginErr make the FALLBACK error paths reachable. Without
+	// them, PrepareContext and BeginTx can take their `if !ok` branch but never
+	// see it fail, and the mutation gate reported exactly those two lines.
+	prepareErr error
+	beginErr   error
+}
 
 func (d *plainDriver) Open(name string) (driver.Conn, error) { return &plainConn{d: d}, nil }
 func (d *plainDriver) Driver() driver.Driver                 { return d }
@@ -198,6 +204,18 @@ type plainConn struct{ d *plainDriver }
 
 var _ driver.Conn = (*plainConn)(nil)
 
-func (c *plainConn) Prepare(query string) (driver.Stmt, error) { return &testStmt{}, nil }
-func (c *plainConn) Close() error                              { return nil }
-func (c *plainConn) Begin() (driver.Tx, error)                 { return &testTx{}, nil }
+func (c *plainConn) Prepare(query string) (driver.Stmt, error) {
+	if c.d.prepareErr != nil {
+		return nil, c.d.prepareErr
+	}
+	return &testStmt{}, nil
+}
+
+func (c *plainConn) Close() error { return nil }
+
+func (c *plainConn) Begin() (driver.Tx, error) {
+	if c.d.beginErr != nil {
+		return nil, c.d.beginErr
+	}
+	return &testTx{}, nil
+}

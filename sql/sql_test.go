@@ -616,10 +616,16 @@ func TestTheFallbacksWorkWhenTheBaseOffersOnlyTheRequiredMethods(t *testing.T) {
 // A failure from the BASE passes through unchanged and is not reported as an
 // injected one. Otherwise a real defect in the driver under test reads as a
 // fault this package caused.
+//
+// The last two rows drive the FALLBACK paths: a base that offers neither
+// ConnPrepareContext nor ConnBeginTx, and fails. Without them the wrapper can
+// take its `if !ok` branch and never see it fail, which is what the mutation
+// gate reported after the first repair — the branch was reachable, and the
+// error inside it was not.
 func TestABaseFailurePassesThroughUnchanged(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		base *testDriver
+		base driver.Connector
 		call func(driver.Conn) error
 	}{
 		{"Prepare", &testDriver{prepareErr: errBase}, func(c driver.Conn) error {
@@ -635,6 +641,14 @@ func TestABaseFailurePassesThroughUnchanged(t *testing.T) {
 			return err
 		}},
 		{"BeginTx", &testDriver{beginErr: errBase}, func(c driver.Conn) error {
+			_, err := c.(driver.ConnBeginTx).BeginTx(context.Background(), driver.TxOptions{})
+			return err
+		}},
+		{"PrepareContext falling back", &plainDriver{prepareErr: errBase}, func(c driver.Conn) error {
+			_, err := c.(driver.ConnPrepareContext).PrepareContext(context.Background(), "select 1")
+			return err
+		}},
+		{"BeginTx falling back", &plainDriver{beginErr: errBase}, func(c driver.Conn) error {
 			_, err := c.(driver.ConnBeginTx).BeginTx(context.Background(), driver.TxOptions{})
 			return err
 		}},
