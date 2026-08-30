@@ -1,5 +1,11 @@
 package crash
 
+import (
+	"testing"
+
+	faultfs "github.com/dd0wney/fault/fs"
+)
+
 // Entry is the test-visible shape of a record entry. The internal type stays
 // unexported, because an adapter never reads one and a caller never builds one.
 //
@@ -80,4 +86,58 @@ func Needs(r *Recorder) [][]int {
 		out[i] = append([]int(nil), e.needs...)
 	}
 	return out
+}
+
+// State is a test-visible candidate state.
+//
+// Name is the address go test -run matches, so a test that prints it prints
+// exactly what a developer has to type to re-run the one state.
+//
+// Point is the entry index the crash sits after. A check whose legal answer
+// depends on how far the scenario had already got cannot be written without
+// it, and the four reference stores are that kind of check: a state from a
+// crash inside the first save may hold the old value, and a state from a crash
+// inside the second save may not.
+type State struct {
+	Name  string
+	Point int
+
+	tree tree
+	root string
+}
+
+// FS materialises the state and returns an FS that serves it under the names
+// the scenario used.
+func (s State) FS(t *testing.T) faultfs.FS {
+	t.Helper()
+	dir := t.TempDir()
+	if err := s.tree.writeTo(dir); err != nil {
+		t.Fatalf("cannot materialise state %s: %v", s.Name, err)
+	}
+	return &remapFS{base: faultfs.OS(), from: s.root, to: dir}
+}
+
+// States exposes plan's output to a test that must assert a store FAILS, which
+// cannot be done through Run without failing the enclosing test.
+func States(r *Recorder, m Model) ([]State, error) {
+	got, err := plan(r, m)
+	if err != nil {
+		return nil, err
+	}
+
+	r.mu.Lock()
+	byIndex := index(r.entries)
+	root := r.root
+	r.mu.Unlock()
+
+	out := make([]State, len(got))
+	for i, s := range got {
+		out[i] = State{
+			Name:  pointName(byIndex, s.point) + "/" + s.name,
+			Point: s.point,
+			tree:  s.result,
+			root:  root,
+		}
+	}
+	return out, nil
 }
