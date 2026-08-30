@@ -77,3 +77,57 @@ func split(entries []entry, k int, m Model) (durable, pending []int) {
 	}
 	return durable, pending
 }
+
+// units splits the pending entries into the things a crash can lose.
+//
+// A metadata entry never splits, because no filesystem half-renames a file.
+// A write splits at sector boundaries of its ABSOLUTE offset range, so two
+// writes into the same sector of the same file split at the same place.
+// Model.Sector == 0 keeps a whole Write call as the unit. SplitAtCrashOnly
+// limits splitting to the write at k, so every earlier pending write is lost
+// whole -- this is what SQLite's crash simulation does, and it buys the
+// part-written record without paying for it at every earlier write.
+func units(entries []entry, pending []int, k int, m Model) []unit {
+	byIndex := make(map[int]entry, len(entries))
+	for _, e := range entries {
+		byIndex[e.n] = e
+	}
+
+	var out []unit
+	for _, n := range pending {
+		e := byIndex[n]
+		splittable := e.k == kWrite && m.Sector > 0 && len(e.data) > 0
+		if splittable && m.SplitAtCrashOnly && n != k {
+			splittable = false
+		}
+		if !splittable {
+			out = append(out, unit{entry: n})
+			continue
+		}
+		out = append(out, sectorsOf(e, int64(m.Sector))...)
+	}
+	return out
+}
+
+// sectorsOf cuts one write at the sector boundaries its absolute offset
+// falls on. from and to come out relative to the write's own data, because
+// replay slices e.data[r.from:r.to] and knows nothing of the file offset.
+//
+// sect is the loop counter i, carried rather than computed from from and to:
+// the last sector of a write is usually short, so from/(to-from) names it
+// wrongly. See units_test.go for the case this guards.
+func sectorsOf(e entry, sector int64) []unit {
+	start := e.off
+	end := e.off + int64(len(e.data))
+
+	var out []unit
+	for at, i := start, 0; at < end; i++ {
+		next := (at/sector + 1) * sector
+		if next > end {
+			next = end
+		}
+		out = append(out, unit{entry: e.n, from: at - start, to: next - start, sect: i})
+		at = next
+	}
+	return out
+}
