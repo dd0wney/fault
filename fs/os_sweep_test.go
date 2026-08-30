@@ -34,17 +34,17 @@ func atomicWrite(fsys faultfs.FS, dir string, data []byte) error {
 		return err
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close()
-		fsys.Remove(tmp)
+		_ = f.Close()
+		_ = fsys.Remove(tmp)
 		return err
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
-		fsys.Remove(tmp)
+		_ = f.Close()
+		_ = fsys.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		fsys.Remove(tmp)
+		_ = fsys.Remove(tmp)
 		return err
 	}
 	return fsys.Rename(tmp, final)

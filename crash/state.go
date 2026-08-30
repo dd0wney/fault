@@ -269,7 +269,10 @@ func fingerprint(t tree) string {
 	h := sha256.New()
 	for _, k := range t.keys() {
 		n := t[k]
-		fmt.Fprintf(h, "%s\x00%v\x00%d\x00", k, n.dir, len(n.data))
+		// hash.Hash.Write is documented to never return an error, so its
+		// result carries no information here. Do not change what this
+		// writes: a changed digest changes every state name.
+		_, _ = fmt.Fprintf(h, "%s\x00%v\x00%d\x00", k, n.dir, len(n.data))
 		h.Write(n.data)
 	}
 	return hex.EncodeToString(h.Sum(nil))

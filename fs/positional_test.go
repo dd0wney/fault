@@ -234,13 +234,23 @@ func TestAnInjectedSeekOrWriteAtReportsZero(t *testing.T) {
 			continue
 		}
 
-		if got, err := f.(seeker).Seek(4, io.SeekStart); errors.Is(err, syscall.EIO) {
+		s, ok := f.(seeker)
+		if !ok {
+			_ = f.Close()
+			t.Fatalf("op %d: the wrapped file does not offer the seeker interface", n)
+		}
+		if got, err := s.Seek(4, io.SeekStart); errors.Is(err, syscall.EIO) {
 			sawSeek = true
 			if got != 0 {
 				t.Errorf("op %d: an injected Seek returned offset %d, want 0", n, got)
 			}
 		}
-		if got, err := f.(writerAt).WriteAt([]byte("xyz"), 0); errors.Is(err, syscall.EIO) {
+		w, ok := f.(writerAt)
+		if !ok {
+			_ = f.Close()
+			t.Fatalf("op %d: the wrapped file does not offer the writerAt interface", n)
+		}
+		if got, err := w.WriteAt([]byte("xyz"), 0); errors.Is(err, syscall.EIO) {
 			sawWriteAt = true
 			if got != 0 {
 				t.Errorf("op %d: an injected WriteAt reported %d bytes, want 0", n, got)
@@ -270,7 +280,12 @@ func TestAnUninjectedWriteAtWritesAndReportsTheCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := f.(writerAt).WriteAt([]byte("AB"), 4)
+	w, ok := f.(writerAt)
+	if !ok {
+		_ = f.Close()
+		t.Fatal("the wrapper does not offer the writerAt interface")
+	}
+	got, err := w.WriteAt([]byte("AB"), 4)
 	if err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}
@@ -337,7 +352,12 @@ func TestAShortWriteAtLetsTheBaseErrorOutrankTheInjectedOne(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		got, werr := f.(writerAt).WriteAt([]byte("ABCD"), 0)
+		w, ok := f.(writerAt)
+		if !ok {
+			_ = f.Close()
+			t.Fatalf("op %d: the wrapper does not offer the writerAt interface", n)
+		}
+		got, werr := w.WriteAt([]byte("ABCD"), 0)
 		_ = f.Close()
 
 		// The assertion is the INVERSE, and it has to be.

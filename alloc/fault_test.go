@@ -141,7 +141,7 @@ func TestFreeReachesTheRealAllocator(t *testing.T) {
 			continue
 		}
 		a := faultalloc.New(p, base)
-		a.Bytes(8) // refused on this pass
+		_, _ = a.Bytes(8) // refused on this pass
 		b, err := a.Bytes(8)
 		if err != nil {
 			t.Fatalf("second allocation: %v", err)

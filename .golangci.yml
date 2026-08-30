@@ -3,19 +3,23 @@
 #
 # `default: standard` gives errcheck, govet, ineffassign, staticcheck, and
 # unused. This library's subject is the unhandled error, so errcheck is the
-# one linter here that is not negotiable, and the two settings below widen
-# what it catches:
+# one linter here that is not negotiable, and the setting below widens what
+# it catches:
 #
-#   check-blank:            an error assigned to `_` is still an unhandled
-#                            error, and the default leaves it unreported.
 #   check-type-assertions:  the two-value form of a type assertion returns an
 #                            `ok` that is the same shape as an error return,
 #                            and a caller that drops it has the same bug.
 #
-# errorlint is enabled for the same reason: it catches the two ways that
-# wrapping breaks errors.Is/errors.As (a %s where %w belongs, and a raw ==
-# comparison against a sentinel), which is a second, common way an error
-# stops being handled correctly even though a return value is checked.
+# check-blank is deliberately NOT set. This repository writes `_ = f.Close()`
+# on purpose, forty-two times, as its explicit "the author saw this error and
+# chose to ignore it" form. check-blank reads that same form as an unhandled
+# error, so turning it on would make the rule report the opposite of a
+# defect at every one of those forty-two lines.
+#
+# errorlint is enabled for the same reason as errcheck: it catches the two
+# ways that wrapping breaks errors.Is/errors.As (a %s where %w belongs, and a
+# raw == comparison against a sentinel), which is a second, common way an
+# error stops being handled correctly even though a return value is checked.
 #
 # gosec is deliberately NOT enabled. See the comment beside the `govulncheck`
 # step in the `checks` job of this file for the reason: its one finding on
@@ -28,5 +32,4 @@ linters:
     - errorlint
   settings:
     errcheck:
-      check-blank: true
       check-type-assertions: true

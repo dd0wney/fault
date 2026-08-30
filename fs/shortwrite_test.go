@@ -138,7 +138,7 @@ func TestAShortWriteHasTheShapeOfARealOne(t *testing.T) {
 		if err != nil {
 			t.Fatalf("preparing the control: %v", err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		_, writeErr := f.Write([]byte("x"))
 		return writeErr
 	}()
@@ -260,7 +260,7 @@ func TestBothConstructorsVisitTheSamePoints(t *testing.T) {
 		if err != nil {
 			return 0
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		if _, err := f.Write([]byte("hello")); err != nil {
 			return 1
 		}
