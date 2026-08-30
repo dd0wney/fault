@@ -3,6 +3,7 @@ package crash
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"path"
 )
@@ -170,6 +171,75 @@ func closure(entries []entry, keep map[int]bool) map[int]bool {
 		}
 	}
 	return out
+}
+
+// maxStates bounds one crash point's exhaustive walk. It is provisional;
+// Task 15 replaces it with a number measured from the reference stores.
+const maxStates = 4096
+
+var errTooManyStates = errors.New("crash: too many states for an exhaustive cover")
+
+// subsets returns the states one crash point can produce, by the rule c.
+// Each result names the units that were LOST, so the empty result is the
+// state where everything pending reached the disk.
+func subsets(u []unit, c Cover) ([][]unit, error) {
+	if c == Prefixes {
+		// The pending units persist in log order, so what a crash loses is a
+		// suffix of that order: the earliest unit survives longest, and the
+		// latest unit is lost first. i counting down from len(u) to 0 walks
+		// exactly those u+1 suffixes, from "lose nothing" to "lose
+		// everything".
+		out := make([][]unit, 0, len(u)+1)
+		for i := len(u); i >= 0; i-- {
+			out = append(out, append([]unit(nil), u[i:]...))
+		}
+		return out, nil
+	}
+
+	n := len(u)
+	// n >= 63 is refused outright: int64(1)<<63 goes negative, so a shift
+	// that wide no longer means "2 to the power of n" and the comparison
+	// below could not be trusted.
+	if n >= 63 {
+		return nil, tooManyStates(n)
+	}
+	total64 := int64(1) << uint(n)
+	if total64 > maxStates {
+		return nil, tooManyStates(n)
+	}
+	total := int(total64)
+
+	out := make([][]unit, 0, total)
+	for mask := 0; mask < total; mask++ {
+		var lost []unit
+		for i, x := range u {
+			if mask&(1<<uint(i)) != 0 {
+				lost = append(lost, x)
+			}
+		}
+		out = append(out, lost)
+	}
+	return out, nil
+}
+
+// tooManyStates names the unit count, the resulting state count, and
+// Prefixes as the way forward. subsets returns this instead of visiting a
+// truncated subset -- a partial walk reports a pass exactly the same way a
+// complete one does, which is the failure this package exists to catch.
+func tooManyStates(n int) error {
+	return fmt.Errorf("%w: %d pending units give %s states, and the cap is %d. Use Prefixes instead",
+		errTooManyStates, n, countOf(n), maxStates)
+}
+
+// countOf renders 2^n as a state count. It reports the exact number where an
+// int64 can hold it, and switches to the "2^n" form before that stops being
+// true, so the message always states the real size rather than a wrapped
+// (or negative) one.
+func countOf(n int) string {
+	if n >= 63 {
+		return fmt.Sprintf("2^%d", n)
+	}
+	return fmt.Sprintf("%d", int64(1)<<uint(n))
 }
 
 // fingerprint is a stable hash of a tree, used to drop duplicate states
