@@ -228,3 +228,113 @@ func TestTheWrapperForwardsWhatTheBaseImplements(t *testing.T) {
 		}
 	}
 }
+
+// errBase is what the base driver returns when it is made to fail. It is not
+// the injected error, so a test can tell the two apart.
+var errBase = errors.New("the base driver refused")
+
+// A failure from the BASE driver is not an injected failure. It passes through
+// unchanged, and it counts no connection, because nothing was handed out.
+//
+// The mutation gate found this gap rather than a reader: deleting
+// `return nil, err` from Connect changed no test result, because the test
+// driver could not fail.
+func TestABaseConnectFailurePassesThroughAndCountsNothing(t *testing.T) {
+	base := &testDriver{connectErr: errBase}
+	f := faultsql.New(&fault.Points{}, base)
+
+	c, err := f.Connect(context.Background())
+	if !errors.Is(err, errBase) {
+		t.Errorf("Connect() = %v, want the base driver's own error unchanged", err)
+	}
+	if errors.Is(err, faultsql.ErrInjected) {
+		t.Error("a base failure was reported as an injected failure, so a real defect would read as one this package caused")
+	}
+	if c != nil {
+		t.Error("Connect returned a connection along with an error")
+	}
+	if got := f.Outstanding(); got != 0 {
+		t.Errorf("Outstanding() = %d after a failed base connect, want 0", got)
+	}
+}
+
+// Prepare is one operation and it fails at its armed point. Without this, a
+// tripped Prepare could return no error at all and every test still passed.
+func TestPrepareFailsAtTheArmedOperation(t *testing.T) {
+	reached := false
+	for n, p := range fault.Sweep(t) {
+		f := faultsql.New(p, &testDriver{})
+
+		c, err := f.Connect(context.Background()) // operation 1
+		if err != nil {
+			continue
+		}
+		st, prepErr := c.Prepare("select 1") // operation 2
+		if st != nil {
+			_ = st.Close()
+		}
+		_ = c.Close()
+
+		if n != 2 {
+			continue
+		}
+		reached = true
+		if !errors.Is(prepErr, faultsql.ErrInjected) {
+			t.Errorf("Prepare() = %v, want the injected error", prepErr)
+		}
+		if st != nil {
+			t.Error("Prepare returned a statement along with an error")
+		}
+	}
+	if !reached {
+		t.Fatal("the sweep never armed the prepare, so nothing above was asserted")
+	}
+}
+
+// Begin is one operation and it fails at its armed point.
+//
+// driver.Conn requires Begin, so it cannot wait for the transaction work in
+// task 9. It trips rather than delegating silently, because an operation that
+// reached the driver uncounted would shift every later index by one.
+func TestBeginFailsAtTheArmedOperation(t *testing.T) {
+	reached := false
+	for n, p := range fault.Sweep(t) {
+		f := faultsql.New(p, &testDriver{})
+
+		c, err := f.Connect(context.Background()) // operation 1
+		if err != nil {
+			continue
+		}
+		tx, beginErr := c.Begin() // operation 2
+		_ = c.Close()
+
+		if n != 2 {
+			continue
+		}
+		reached = true
+		if !errors.Is(beginErr, faultsql.ErrInjected) {
+			t.Errorf("Begin() = %v, want the injected error", beginErr)
+		}
+		if tx != nil {
+			t.Error("Begin returned a transaction along with an error")
+		}
+	}
+	if !reached {
+		t.Fatal("the sweep never armed the begin, so nothing above was asserted")
+	}
+}
+
+// THE OTHER HALF OF FORK 2. TestTwoLiveConnectionsAreRefused proves the guard
+// fires; this proves OpenDB does not rely on it, by setting the limit that
+// makes two live connections impossible in the first place.
+//
+// The mutation gate found this gap too. SetMaxOpenConns(1) could become
+// SetMaxOpenConns(0), which means UNLIMITED, and no test noticed.
+func TestOpenDBLimitsThePoolToOneConnection(t *testing.T) {
+	db, _ := faultsql.OpenDB(&fault.Points{}, &testDriver{})
+	defer func() { _ = db.Close() }()
+
+	if got := db.Stats().MaxOpenConnections; got != 1 {
+		t.Errorf("MaxOpenConnections = %d, want 1 — 0 means unlimited, which is the value that makes the operation index meaningless", got)
+	}
+}
