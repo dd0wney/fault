@@ -156,6 +156,42 @@ func (s shortWriteFile) Write(b []byte) (int, error) {
 	return s.File.Write(b[:half])
 }
 
+// A sequential write that moved nothing is not a write either.
+//
+// The guard is n > 0, and TestAShortWriteRecordsOnlyWhatLanded pins only its
+// upper side: a short write still moves at least one byte, so n > 1 fails that
+// test while n >= 0 and n > -1 do not. Nothing wrote zero bytes, so an empty
+// buffer could have been recorded as a write of no bytes at an offset the
+// caller never wrote to.
+//
+// The positional side of this boundary is in positional_test.go. The two sites
+// are separate code, and a test of one says nothing about the other.
+func TestAWriteOfNoBytesRecordsNothing(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(faultfs.OS(), dir)
+
+	f, err := rec.OpenFile(filepath.Join(dir, "a"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := f.Write([]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("the base moved %d bytes for an empty buffer, want 0", n)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "write" {
+			t.Errorf("a write that moved no bytes was recorded at offset %d", e.Off)
+		}
+	}
+}
+
 // data must hold only the bytes the base actually wrote, never the whole
 // buffer a caller offered. Review finding 3 found this property untested.
 func TestAShortWriteRecordsOnlyWhatLanded(t *testing.T) {
