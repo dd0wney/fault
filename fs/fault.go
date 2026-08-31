@@ -437,7 +437,7 @@ func (f *faultFile) Sync() error {
 
 func (f *faultFile) Truncate(size int64) error {
 	if f.p.Trip() {
-		_ = f.fail
+		return f.fail("truncate")
 	}
 	return f.base.Truncate(size)
 }
