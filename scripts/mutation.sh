@@ -86,10 +86,53 @@ if [ -n "$MISSING" ]; then
   exit 2
 fi
 
+# The remaining arguments are a package filter, and until 2026-08-31 nothing
+# read them. The usage line above has documented [packages...] since this
+# script was written; the flag loop left them in "$@" and no later line
+# referenced it, so the run loop below read only the baseline.
+#
+# MEASURED BEFORE THE REPAIR: `mutation.sh --root testdata/thin --baseline
+# ... ./no-such-package/` exited 1 having measured ./ instead. A caller asked
+# for one package, got a different one, and no output said so. That is the
+# family this repository keeps finding: the tool is correct about the work it
+# did, and the work is not the work requested.
+#
+# An unknown name exits 2 rather than measuring nothing. A filter that matched
+# no row would run zero packages and report "every package met its floor",
+# which is the false pass this whole file exists to refuse.
+norm() { printf '%s' "$1" | sed 's|^\./||; s|/$||; s|^$|.|'; }
+
+WANTED=""
+if [ $# -gt 0 ]; then
+  LISTED_PKGS="$(sed 's/\t.*//' "$BASELINE" | grep -v '^#' | grep -v '^$')"
+  for arg in "$@"; do
+    want="$(norm "$arg")"
+    found=0
+    for listed in $LISTED_PKGS; do
+      if [ "$(norm "$listed")" = "$want" ]; then found=1; break; fi
+    done
+    if [ "$found" = 0 ]; then
+      echo "mutation: '$arg' is not a package in '$BASELINE' — refusing to run" >&2
+      echo "mutation: a filter that matches no row measures nothing and would" >&2
+      echo "mutation: still print that every package met its floor." >&2
+      exit 2
+    fi
+    WANTED="$WANTED $want"
+  done
+fi
+
 FAILED=0
+MEASURED=0
 while IFS=$'\t' read -r pkg floor rest; do
   case "$pkg" in ''|'#'*) continue ;; esac
   [ -n "${floor:-}" ] || continue
+  if [ -n "$WANTED" ]; then
+    case " $WANTED " in
+      *" $(norm "$pkg") "*) ;;
+      *) continue ;;
+    esac
+  fi
+  MEASURED=$((MEASURED + 1))
 
   OUT="$(cd "$ROOT" && go-mutesting "$pkg" 2>&1)"
   SCORE="$(printf '%s\n' "$OUT" | sed -n 's/.*mutation score is \([0-9.]*\).*/\1/p' | tail -1)"
@@ -132,4 +175,16 @@ done < "$BASELINE"
   echo "mutation: or new code arrived without assertions. Look at what survived." >&2
   exit 1
 }
-echo "mutation: every package met its floor"
+# A run that measured nothing must not report a pass. The filter is validated
+# above so this should be unreachable, and it stays because "unreachable" is a
+# property of today's code that no test protects.
+if [ "$MEASURED" = 0 ]; then
+  echo "mutation: no package was measured — refusing to report a pass" >&2
+  exit 2
+fi
+
+if [ -n "$WANTED" ]; then
+  echo "mutation: $MEASURED of the baseline's packages met their floor (filtered:$WANTED)"
+else
+  echo "mutation: every package met its floor"
+fi
