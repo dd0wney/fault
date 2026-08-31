@@ -61,3 +61,42 @@ func TestTheOperationTableCoversTheFSInterface(t *testing.T) {
 		t.Fatal("reflection reported no methods on fs.FS, so this check compared nothing")
 	}
 }
+
+// The same comparison one level down, over fs.File.
+//
+// THE OPTIONAL METHODS ARE OUTSIDE THIS CHECK, and saying so is part of it.
+// Seek and WriteAt are not members of fs.File — a caller type-asserts for them,
+// exactly as it does for io.ReaderFrom — so reflection over the interface
+// cannot see them and their table in positional_test.go stays hand-maintained.
+//
+// That is the same defect this file closes, one level further out, and it is
+// left open deliberately rather than hidden: an optional method set has no
+// declaration to compare against. The alternative would be a second
+// hand-written list of the optional interfaces, which is the thing being
+// removed rather than a fix for it.
+func TestTheFileTableCoversTheFileInterface(t *testing.T) {
+	iface := reflect.TypeOf((*faultfs.File)(nil)).Elem()
+
+	inTable := make(map[string]bool, len(fileOps))
+	for _, o := range fileOps {
+		inTable[o.name] = true
+	}
+
+	for i := range iface.NumMethod() {
+		name := iface.Method(i).Name
+		if !inTable[name] {
+			t.Errorf("fs.File has %s and the file operation table does not, so no test proves it "+
+				"returns the injected error", name)
+		}
+	}
+
+	for name := range inTable {
+		if _, ok := iface.MethodByName(name); !ok {
+			t.Errorf("the file operation table has %s and fs.File does not", name)
+		}
+	}
+
+	if iface.NumMethod() == 0 {
+		t.Fatal("reflection reported no methods on fs.File, so this check compared nothing")
+	}
+}

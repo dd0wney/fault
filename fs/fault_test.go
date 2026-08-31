@@ -252,20 +252,25 @@ func TestARealErrorFromTheBasePassesThrough(t *testing.T) {
 // Counting passes proves Trip is called. It does not prove the method returns
 // the injected error -- a method that calls Trip and ignores the answer keeps
 // the pass count exactly right.
-func TestEveryFileMethodReturnsTheInjectedError(t *testing.T) {
-	type op struct {
-		name string
-		call func(faultfs.File) error
-	}
-	ops := []op{
-		{"Read", func(f faultfs.File) error { _, err := f.Read(make([]byte, 4)); return err }},
-		{"Write", func(f faultfs.File) error { _, err := f.Write([]byte("x")); return err }},
-		{"Sync", faultfs.File.Sync},
-		{"Truncate", func(f faultfs.File) error { return f.Truncate(0) }},
-		{"Close", faultfs.File.Close},
-	}
+// fileOps is package-level so contract_test.go can compare it against the
+// fs.File interface. Both must read the SAME table: a second list written for
+// the comparison would drift from this one, and the drift is the defect the
+// comparison exists to close.
+type fileOp struct {
+	name string
+	call func(faultfs.File) error
+}
 
-	for i, o := range ops {
+var fileOps = []fileOp{
+	{"Read", func(f faultfs.File) error { _, err := f.Read(make([]byte, 4)); return err }},
+	{"Write", func(f faultfs.File) error { _, err := f.Write([]byte("x")); return err }},
+	{"Sync", faultfs.File.Sync},
+	{"Truncate", func(f faultfs.File) error { return f.Truncate(0) }},
+	{"Close", faultfs.File.Close},
+}
+
+func TestEveryFileMethodReturnsTheInjectedError(t *testing.T) {
+	for i, o := range fileOps {
 		t.Run(o.name, func(t *testing.T) {
 			// Pass 1 fails the open, so arm the pass that reaches this method:
 			// the open is operation 1, and the methods follow in order.
@@ -276,7 +281,7 @@ func TestEveryFileMethodReturnsTheInjectedError(t *testing.T) {
 				if openErr != nil {
 					continue
 				}
-				for j, each := range ops {
+				for j, each := range fileOps {
 					err := each.call(f)
 					if n == want && j == i {
 						got = err
