@@ -34,6 +34,13 @@
 // BeginTx, Ping, Exec, Query, ExecContext, QueryContext, Commit, Rollback, and
 // every Close.
 //
+// EVERY CLOSE INCLUDES sql.DB.Close. The pool closes its connections through
+// this adapter, so a pass that arms a connection close makes db.Close return
+// [ErrInjected]. That is correct and it surprises people: a spike written
+// against a real driver, by an author who had read this page, treated the
+// error as a harness failure and went red on pass 7 of 8. A sweep must handle
+// db.Close like any other operation.
+//
 // Three things do not, and each is a deliberate exception with a test that
 // fails if it stops being one.
 //
@@ -41,12 +48,34 @@
 // database/sql asks for both before performing anything, and a driver answers
 // from memory.
 //
-// ResetSession is the sharp one, and it is the opposite of the rule Begin
-// follows. The POOL calls it, not the caller, and it decides when from its own
-// state: whether a connection was reused, how long it sat, what else the
-// program did. Counting it would make the N-th operation a different operation
-// between two runs of one scenario. It is still forwarded, because omitting
-// the method would stop database/sql resetting the base driver at all.
+// ResetSession is the sharp one, and there are two reasons rather than one.
+//
+// The weaker reason is timing: the POOL calls it, not the caller, and decides
+// when from its own state -- whether a connection was reused, how long it sat,
+// what else the program did. Counting it would make the N-th operation a
+// different operation between two runs of one scenario.
+//
+// THE STRONGER REASON IS THAT THERE IS NO CALLER-VISIBLE ERROR TO INJECT.
+// sql.go:1353 reads:
+//
+//	if err := conn.resetSession(ctx); errors.Is(err, driver.ErrBadConn) {
+//		conn.Close()
+//		return nil, err
+//	}
+//	return conn, nil
+//
+// Any error that is not [database/sql/driver.ErrBadConn] is discarded, and the
+// connection is handed to the caller anyway. [ErrInjected] is deliberately not
+// ErrBadConn, so an injected failure here would be swallowed whole: the pass
+// would consume an operation index, inject an error nobody ever sees, and run
+// to completion reporting a pass.
+//
+// That is the shape [Fault.Err] refuses for a result set shorter than the
+// named row, and the shape crash's errNoMutations refuses for a total bypass.
+// Counting ResetSession would manufacture it on every sweep of every scenario.
+//
+// It is still forwarded, because omitting the method would stop database/sql
+// resetting the base driver at all.
 //
 // [driver.Rows].Next consumes exactly ONE index per result set, on its first
 // call, and not one per row. Per row was the obvious reading and it is wrong
