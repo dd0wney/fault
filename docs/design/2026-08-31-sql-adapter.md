@@ -193,6 +193,27 @@ move every later armed point.
 The limits section must state plainly that a failure at row 400 of 600 is not
 reachable unless the caller asks for it.
 
+**REFINED 2026-08-31 during implementation, and confirmed.** The wording above
+contradicts itself, and the contradiction is the same defect as the option it
+rejects. If the caller names row 400 and the result set holds 200, no trip
+happens at all, so whether an index is consumed depends on the DATA — which is
+what this fork exists to prevent.
+
+Three things are therefore separate, and the original wording had only two:
+
+1. WHEN THE INDEX IS CONSUMED. At the first `Next` of the result set, always,
+   whatever row is named. This is what keeps the count structural.
+2. WHERE THE FAILURE IS DELIVERED. At the named row, default 0. `NewAtRow`
+   names it. This moves nothing but the position of the error.
+3. WHAT HAPPENS WHEN THE RESULT SET IS SHORTER. The pass consumed an index and
+   injected nothing, so it asserted nothing while reporting a pass. That is
+   refused through `Fault.Err`, in the shape `errNoMutations` and
+   `errConcurrentConns` already use.
+
+The third is the one the original wording had no answer for, and it is the
+failure this whole module is written about: a check that reports a pass having
+measured nothing.
+
 ### Fork 5 — the invariant and the leak count
 
 **Measured.** `sql.go:1207` — `DBStats.OpenConnections` is "the number of
@@ -235,7 +256,13 @@ target" defect the mutation script already warns about.
 - Nothing about `driver.ErrBadConn` retries. The adapter refuses to produce
   one, and asserts it did not.
 - Nothing under a pool wider than one connection. Use `fault/role`.
-- Nothing about a failure at an arbitrary row of a large result set.
+- Nothing about a failure at an arbitrary row of a large result set UNLESS
+  the caller names it with `NewAtRow`, and a named row past the end of the
+  result set is refused rather than skipped in silence.
+- Nothing about a result set the caller never iterates. `Next` consumes the
+  index, so a `Rows` opened and closed without a `Next` takes none. That
+  follows the program's structure rather than its data, so it is a limit
+  and not a defect.
 - Nothing about an interface the wrapper does not implement, except that a test
   fails when the wrapped driver implements one the wrapper does not.
 
