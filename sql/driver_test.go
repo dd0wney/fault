@@ -43,6 +43,10 @@ type testDriver struct {
 	// rows is how many rows a query returns. It exists so a test can prove
 	// the operation count does NOT follow it.
 	rows int
+	// moreRows, when non-zero, is a SECOND result set NextResultSet advances to.
+	moreRows int
+	// nextSetErr is what the base returns from NextResultSet.
+	nextSetErr error
 
 	// queryErr and execErr make the pass-through paths of QueryContext and
 	// ExecContext reachable. stmtQueryErr does the same for stmt.Query, which
@@ -183,7 +187,14 @@ func (c *testConn) rowsOf() *testRows {
 	for i := range out {
 		out[i] = []driver.Value{int64(i)}
 	}
-	return &testRows{rows: out}
+	var more [][]driver.Value
+	if c.d.moreRows > 0 {
+		more = make([][]driver.Value, c.d.moreRows)
+		for i := range more {
+			more[i] = []driver.Value{int64(100 + i)}
+		}
+	}
+	return &testRows{rows: out, more: more, nextSetErr: c.d.nextSetErr}
 }
 
 func (c *testConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
@@ -261,6 +272,14 @@ func (testResult) RowsAffected() (int64, error) { return 1, nil }
 type testRows struct {
 	rows [][]driver.Value
 	n    int
+
+	// more is the result set NextResultSet advances to. Without it the
+	// wrapper's row-budget reset is unreachable: there is no second set whose
+	// rows could be counted from zero, and the mutation gate reported that.
+	more [][]driver.Value
+	// nextSetErr is what the base returns from NextResultSet, so the wrapper's
+	// pass-through of it is reachable.
+	nextSetErr error
 }
 
 func (r *testRows) Columns() []string { return []string{"n"} }
@@ -284,13 +303,31 @@ var (
 	_ driver.RowsNextResultSet              = (*testRows)(nil)
 )
 
-func (r *testRows) ColumnTypeScanType(int) reflect.Type               { return reflect.TypeOf(int64(0)) }
-func (r *testRows) ColumnTypeDatabaseTypeName(int) string             { return "BIGINT" }
-func (r *testRows) ColumnTypeNullable(int) (bool, bool)               { return false, true }
-func (r *testRows) ColumnTypeLength(int) (int64, bool)                { return 0, false }
-func (r *testRows) ColumnTypePrecisionScale(int) (int64, int64, bool) { return 0, 0, false }
-func (r *testRows) HasNextResultSet() bool                            { return false }
-func (r *testRows) NextResultSet() error                              { return io.EOF }
+func (r *testRows) ColumnTypeScanType(int) reflect.Type   { return reflect.TypeOf(int64(0)) }
+func (r *testRows) ColumnTypeDatabaseTypeName(int) string { return "BIGINT" }
+func (r *testRows) ColumnTypeNullable(int) (bool, bool)   { return false, true }
+
+// DISTINCTIVE VALUES ON PURPOSE. These returned (0, false) and (0, 0, false),
+// which are exactly what the wrapper returns when it does NOT forward. A
+// fixture whose answer matches the fallback makes forwarding and not
+// forwarding indistinguishable, and the mutation control proved it: discarding
+// the forwarded call changed no test result.
+func (r *testRows) ColumnTypeLength(int) (int64, bool) { return 42, true }
+func (r *testRows) ColumnTypePrecisionScale(int) (int64, int64, bool) {
+	return 10, 2, true
+}
+func (r *testRows) HasNextResultSet() bool { return r.more != nil }
+
+func (r *testRows) NextResultSet() error {
+	if r.nextSetErr != nil {
+		return r.nextSetErr
+	}
+	if r.more == nil {
+		return io.EOF
+	}
+	r.rows, r.more, r.n = r.more, nil, 0
+	return nil
+}
 
 type testTx struct{}
 
