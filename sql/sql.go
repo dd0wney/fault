@@ -1,23 +1,3 @@
-// Package sql injects faults into a [database/sql] driver.
-//
-// It is the third adapter in this module, after
-// [github.com/dd0wney/fault/fs] and [github.com/dd0wney/fault/alloc], and the
-// first one written against an interface this module did not design.
-//
-// The design document is docs/design/2026-08-31-sql-adapter.md. Six decisions
-// are recorded there with the measurement behind each. The two that shape
-// everything in this file:
-//
-// A pool of more than one connection makes the operation index meaningless,
-// because the N-th operation overall depends on which goroutine reached the
-// driver first. [OpenDB] sets SetMaxOpenConns(1), and [Fault.Err] refuses when
-// two connections are live at once anyway, because a caller can widen the pool
-// afterwards and nothing else would say so.
-//
-// The injected error is deliberately not [database/sql/driver.ErrBadConn].
-// database/sql retries a bad connection: sql.go:1579 runs its body twice and
-// then calls fn(alwaysNewConn) once more, so one armed operation would become
-// up to three driver calls and the count would stop meaning anything.
 package sql
 
 import (

@@ -79,6 +79,7 @@ few of them.
 | `fault/alloc` | Allocator adapter, with both of SQLite's out-of-memory loops and an outstanding-allocation count. |
 | `fault/role` | Per-actor sweeps for concurrent scenarios, with the stability check that makes them sound. |
 | `fault/crash` | Rebuilds the on-disk state a power cut could leave, then runs a check on every one of them. SQLite's third loop. |
+| `fault/sql` | `database/sql` driver adapter. Wraps a `driver.Connector`, counts the connections it hands out, and refuses a pool wider than one. |
 | `fault/tools` | Build-time gates. A separate module, and not part of the library. |
 
 Adapters need `Points` and `Trip` and nothing else, so anyone can write one in
