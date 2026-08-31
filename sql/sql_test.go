@@ -550,11 +550,19 @@ func TestATransactionsOperationsEachCount(t *testing.T) {
 
 // THE ONE DELIBERATE EXCEPTION, asserted so it cannot become an accident.
 //
-// The POOL calls ResetSession, not the caller, and it decides when from its own
-// state: whether a connection was reused, how long it sat, what else the
-// program did. Counting it would make the N-th operation a different operation
-// between two runs of one scenario, which is exactly the property fork 2
-// protects.
+// TWO REASONS, and the second is the one that settles it.
+//
+// The pool calls ResetSession, not the caller, and decides when from its own
+// state, so counting it would make the N-th operation a different operation
+// between two runs of one scenario. That is the smaller problem.
+//
+// The larger one is that there is no caller-visible error to inject at all.
+// sql.go:1353 discards any error from resetSession that is not
+// driver.ErrBadConn and hands the connection over anyway, and ErrInjected is
+// deliberately not ErrBadConn. So counting it would consume an operation
+// index, inject an error nobody ever sees, and let the pass run to completion
+// reporting a pass -- the shape Fault.Err refuses for a short result set,
+// manufactured on every sweep of every scenario.
 //
 // It must still be FORWARDED. Omitting the method would stop database/sql
 // calling the base driver's reset at all, so the driver under test would keep
