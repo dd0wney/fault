@@ -96,6 +96,17 @@ func TestEveryRecordedMethodTakesAnIndex(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open: %v", err)
 			}
+			// The handle must be released before t.TempDir cleans up. POSIX
+			// unlinks an open file happily and Windows refuses, so without
+			// this the subtests leak a handle and the cleanup fails there and
+			// only there. Windows CI caught it; nothing local could.
+			//
+			// The Close subtest closes it as the operation under test, so this
+			// is a second Close for that one. It returns an error, which is
+			// ignored: the descriptor is already released either way, which is
+			// the same POSIX guarantee the fs adapter's Close relies on.
+			defer func() { _ = f.Close() }()
+
 			before := len(crash.Entries(r))
 			op(t, f)
 			if got := len(crash.Entries(r)); got <= before {
