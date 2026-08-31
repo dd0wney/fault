@@ -15,6 +15,23 @@
 # Usage:
 #   scripts/mutation.sh [--baseline FILE] [--root DIR] [packages...]
 #
+# THE WORKING TREE IS THIS TOOL'S SCRATCH SPACE. go-mutesting rewrites source
+# files IN PLACE, runs the tests, and restores them. So while this script runs,
+# the checkout is not a stable thing to read, copy or commit.
+#
+# That is not theoretical. On 2026-08-31 a `git add -A` during a background run
+# of this script committed fs/fault.go mid-mutation, with `return f.fail(...)`
+# replaced by `_ = f.fail` — fault injection silently disabled on Truncate, in
+# the package whose entire purpose is to find that defect. It was caught by a
+# `gh` warning about an uncommitted change, and by nothing else: the tests
+# passed, because the working tree was fine by then, and the mutation gate had
+# already run.
+#
+# The guard below closes the window from both sides. It REFUSES to start on a
+# dirty tree, which makes the restore unambiguous — any difference at exit is
+# this script's debris and nothing else — and it restores on every exit path,
+# including an interrupt.
+#
 # Exit codes:
 #   0  every package met its recorded floor
 #   1  a package scored below its floor
@@ -47,6 +64,45 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$BASELINE" ] || BASELINE="$ROOT/scripts/mutation-baseline.tsv"
+
+# --- the working-tree guard -------------------------------------------------
+
+GUARDED=0
+if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  DIRTY="$(git -C "$ROOT" status --porcelain 2>/dev/null)"
+  if [ -n "$DIRTY" ]; then
+    echo "mutation: the working tree has uncommitted changes, and this script" >&2
+    echo "mutation: rewrites source files in place. Refusing to start, because" >&2
+    echo "mutation: a run that fails or is interrupted could not then be told" >&2
+    echo "mutation: apart from your own edits — and restoring would destroy them." >&2
+    echo "mutation:" >&2
+    echo "$DIRTY" | sed 's/^/mutation:   /' >&2
+    echo "mutation:" >&2
+    echo "mutation: commit or stash first. See the header of this file for the" >&2
+    echo "mutation: commit that made this guard necessary." >&2
+    exit 2
+  fi
+  GUARDED=1
+  # Restore on EVERY exit path, including an interrupt. The refusal above is
+  # what makes this safe: with a clean tree at entry, any difference now is
+  # this script's own debris.
+  restore_tree() {
+    status=$?
+    if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]; then
+      echo "mutation: restoring the working tree after an in-place run" >&2
+      git -C "$ROOT" checkout -- . 2>/dev/null || true
+      git -C "$ROOT" clean -fdq -e '*.tsv' -- '*.go.tmp' 2>/dev/null || true
+      find "$ROOT" -name '*.go.tmp' -not -path '*/.git/*' -delete 2>/dev/null || true
+    fi
+    exit $status
+  }
+  trap restore_tree EXIT INT TERM
+else
+  # A negative result must be reportable. Saying nothing here would let a run
+  # outside a checkout look identical to a guarded one.
+  echo "mutation: not a git checkout, so the working tree cannot be guarded" >&2
+  echo "mutation: or restored. This script rewrites source files in place." >&2
+fi
 
 if ! command -v go-mutesting >/dev/null 2>&1; then
   echo "mutation: go-mutesting is not installed — refusing to report a pass" >&2
