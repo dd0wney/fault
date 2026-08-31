@@ -10,6 +10,16 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 GATE="$HERE/mutation.sh"
 DATA="$HERE/testdata"
+
+# Generated baselines go OUTSIDE the working tree.
+#
+# They used to be written beside the fixtures and removed afterwards, so an
+# interrupted selftest left stray .tsv files in the checkout. It also meant
+# this script dirtied the tree it was testing a gate against -- and the first
+# version of that gate's working-tree guard refused to run because of exactly
+# these two files. --baseline takes any path, so none of that is necessary.
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT INT TERM
 FAILURES=0
 
 expect() {
@@ -42,10 +52,9 @@ expect 2 "a package missing from the baseline" \
 expect 1 "a package below its floor" \
   "$GATE" --root "$DATA/thin" --baseline "$DATA/thin/baseline.tsv"
 
-printf './\t0.00\tany score meets this\n' > "$DATA/thin/floor-zero.tsv"
+printf './\t0.00\tany score meets this\n' > "$TMP/floor-zero.tsv"
 expect 0 "a package that meets its floor" \
-  "$GATE" --root "$DATA/thin" --baseline "$DATA/thin/floor-zero.tsv"
-rm -f "$DATA/thin/floor-zero.tsv"
+  "$GATE" --root "$DATA/thin" --baseline "$TMP/floor-zero.tsv"
 
 # The [packages...] filter. Until 2026-08-31 the usage line documented it and
 # nothing read it, so `mutation.sh ./crash/` measured all five packages and
@@ -62,12 +71,11 @@ expect 2 "a package argument the baseline does not hold" \
 # the pair is what proves the filter excludes rather than merely being
 # accepted.
 printf './\t0.00\tany score meets this\n./absent/\t0.00\tno such package: an unfiltered run must reach it\n' \
-  > "$DATA/thin/two-rows.tsv"
+  > "$TMP/two-rows.tsv"
 expect 2 "an unfiltered run reaches a package it cannot measure" \
-  "$GATE" --root "$DATA/thin" --baseline "$DATA/thin/two-rows.tsv"
+  "$GATE" --root "$DATA/thin" --baseline "$TMP/two-rows.tsv"
 expect 0 "a package argument excludes the other rows" \
-  "$GATE" --root "$DATA/thin" --baseline "$DATA/thin/two-rows.tsv" ./
-rm -f "$DATA/thin/two-rows.tsv"
+  "$GATE" --root "$DATA/thin" --baseline "$TMP/two-rows.tsv" ./
 
 if [ "$FAILURES" != 0 ]; then
   echo "selftest: $FAILURES fixture(s) wrong — the gate is not trustworthy" >&2
