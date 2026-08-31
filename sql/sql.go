@@ -78,6 +78,45 @@ func NewAtRow(p *fault.Points, base driver.Connector, row int) *Fault {
 	return &Fault{p: p, base: base, row: row}
 }
 
+// Connector adapts a [driver.Driver] and a data source name into the
+// [driver.Connector] that [New] and [OpenDB] take.
+//
+// It exists because a real driver does not hand you a Connector. Measured on
+// modernc.org/sqlite v1.57.0, which is a driver nobody here wrote:
+//
+//	driver.Driver=true  driver.Connector=false  driver.DriverContext=false
+//
+// database/sql solves the same problem with an unexported dsnConnector, which
+// is why sql.Open takes a name and a DSN while sql.OpenDB takes a Connector.
+// Without this function every caller of this package writes that type again.
+//
+// It follows sql.Open rather than inventing a rule: a driver that implements
+// [driver.DriverContext] gets its own OpenConnector, because that connector
+// may hold parsed state the DSN string does not, and only the fallback builds
+// one that re-parses the DSN on every connect.
+//
+// The error is returned rather than deferred to the first Connect. A DSN a
+// driver rejects is a caller's mistake, and a sweep that discovered it on pass
+// one would report it as an injected failure's neighbour instead of as itself.
+func Connector(d driver.Driver, dsn string) (driver.Connector, error) {
+	if dc, ok := d.(driver.DriverContext); ok {
+		return dc.OpenConnector(dsn)
+	}
+	return dsnConnector{dsn: dsn, driver: d}, nil
+}
+
+// dsnConnector is the fallback for a driver that offers only Open.
+type dsnConnector struct {
+	dsn    string
+	driver driver.Driver
+}
+
+func (c dsnConnector) Connect(context.Context) (driver.Conn, error) {
+	return c.driver.Open(c.dsn)
+}
+
+func (c dsnConnector) Driver() driver.Driver { return c.driver }
+
 // OpenDB returns a *sql.DB served by this connector, with SetMaxOpenConns(1)
 // applied.
 //
