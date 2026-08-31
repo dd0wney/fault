@@ -1115,3 +1115,35 @@ func TestAnUnarmedResultSetDeliversEveryRow(t *testing.T) {
 		t.Errorf("the drain saw %d rows, want 7", seen)
 	}
 }
+
+// A base failure from a prepared statement's Query passes through unchanged.
+//
+// This is a different path from conn.QueryContext: stmt.Query wraps the result
+// set, so its error branch is its own. The mutation gate reported it
+// unreachable after the field existed but nothing set it, which is the
+// difference between adding a fixture knob and turning it.
+func TestABaseStatementQueryFailurePassesThroughUnchanged(t *testing.T) {
+	f := faultsql.New(&fault.Points{}, &testDriver{stmtQueryErr: errBase})
+	c, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	st, err := c.Prepare("select n")
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	rs, got := st.Query(nil) //nolint:staticcheck // driver.Stmt requires Query, so the wrapper is tested through it
+	if rs != nil {
+		_ = rs.Close()
+	}
+	if !errors.Is(got, errBase) {
+		t.Errorf("stmt.Query = %v, want the base driver's own error unchanged", got)
+	}
+	if errors.Is(got, faultsql.ErrInjected) {
+		t.Error("a base failure was reported as an injected one")
+	}
+}

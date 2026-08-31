@@ -44,9 +44,13 @@ type testDriver struct {
 	rows int
 
 	// queryErr and execErr make the pass-through paths of QueryContext and
-	// ExecContext reachable.
-	queryErr error
-	execErr  error
+	// ExecContext reachable. stmtQueryErr does the same for stmt.Query, which
+	// is a different path: it wraps the result set, so its error branch is its
+	// own. Adding the field to testStmt was not enough on its own -- nothing
+	// set it, and the mutation gate reported the branch still unreachable.
+	queryErr     error
+	execErr      error
+	stmtQueryErr error
 
 	// connectErr, when set, is what the base returns instead of a connection.
 	// A base that cannot fail leaves the adapter's own error path untested,
@@ -106,7 +110,10 @@ func (c *testConn) Prepare(query string) (driver.Stmt, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &testStmt{}, nil
+	c.d.mu.Lock()
+	qerr := c.d.stmtQueryErr
+	c.d.mu.Unlock()
+	return &testStmt{queryErr: qerr}, nil
 }
 
 func (c *testConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
