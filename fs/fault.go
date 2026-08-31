@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 	"syscall"
 
@@ -17,8 +18,15 @@ import (
 // Widening FS instead would break every external implementation to serve a
 // method only the wrapper can answer.
 type Fault struct {
-	mu          sync.Mutex
-	outstanding int // handles handed out and not yet returned
+	mu sync.Mutex
+	// open maps a handle's id to the name it was opened with. Keying by
+	// HANDLE rather than by name is what keeps Outstanding and OpenPaths from
+	// ever disagreeing: they are two readings of one map, so no arithmetic
+	// relates them and none can drift. It also makes a double Close
+	// idempotent, where a bare counter would fall to -1 and report a negative
+	// number of open files.
+	open   map[uint64]string
+	nextID uint64
 
 	p    *fault.Points
 	base FS
@@ -87,7 +95,31 @@ func NewShortWrite(p *fault.Points, base FS) *Fault {
 func (f *Fault) Outstanding() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.outstanding
+	return len(f.open)
+}
+
+// OpenPaths names the handles Outstanding counts, sorted, one entry for each
+// handle still held.
+//
+// A count fails a sweep and cannot fix one. This package found four leaked
+// handles in a peer project's store constructor and could say only "four", so
+// the harness grew a name-tracking wrapper by hand to learn they were all the
+// same file on four different error returns. That wrapper is this method.
+//
+// One entry per HANDLE and not per name: a file opened twice and closed once
+// is still open, and folding the two together would report it closed.
+func (f *Fault) OpenPaths() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]string, 0, len(f.open))
+	for _, name := range f.open {
+		out = append(out, name)
+	}
+	// Map iteration is unordered, so a caller could not compare this against
+	// anything and a failure message would read differently on every run.
+	slices.Sort(out)
+	return out
 }
 
 // OpenFile is the only method that returns another interface, and so the only
@@ -112,10 +144,15 @@ func (f *Fault) OpenFile(name string, flag int, perm os.FileMode) (File, error) 
 	// sequence the filesystem started, so an open, a write, a sync and a close
 	// are operations 1 to 4 of one scenario rather than two separate counts.
 	f.mu.Lock()
-	f.outstanding++
+	if f.open == nil {
+		f.open = make(map[uint64]string)
+	}
+	id := f.nextID
+	f.nextID++
+	f.open[id] = name
 	f.mu.Unlock()
 
-	return &faultFile{owner: f, p: f.p, base: file, err: f.err, name: name, shortWrite: f.shortWrite}, nil
+	return &faultFile{owner: f, id: id, p: f.p, base: file, err: f.err, name: name, shortWrite: f.shortWrite}, nil
 }
 
 func (f *Fault) Remove(name string) error {
@@ -179,6 +216,9 @@ type faultFile struct {
 	// owner is told when this handle is returned, so Outstanding can report a
 	// descriptor leak on an error path.
 	owner *Fault
+	// id identifies this handle in owner.open. Two handles on one name are two
+	// entries, because closing one of them leaves the other open.
+	id uint64
 
 	p    *fault.Points
 	base File
@@ -397,7 +437,7 @@ func (f *faultFile) Close() error {
 	// real handle above was closed either way, so holding the count open would
 	// report a leak the caller cannot avoid.
 	f.owner.mu.Lock()
-	f.owner.outstanding--
+	delete(f.owner.open, f.id)
 	f.owner.mu.Unlock()
 
 	if tripped {
