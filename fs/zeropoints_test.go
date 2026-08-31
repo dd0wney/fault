@@ -110,7 +110,17 @@ func TestAZeroPointsFailsNothing(t *testing.T) {
 			}
 
 			// Nothing was armed, so nothing was handed out and not returned.
-			if got := fsys.(*faultfs.Fault).Outstanding(); got != 0 {
+			//
+			// The two-value form because .golangci.yml sets
+			// errcheck.check-type-assertions, and it is better here than the
+			// one-value form for the same reason it was in fault/sql: it turns
+			// "the constructor stopped returning the concrete type" from a
+			// panic into a sentence.
+			ff, ok := fsys.(*faultfs.Fault)
+			if !ok {
+				t.Fatalf("the constructor returned %T, not *faultfs.Fault, so Outstanding cannot be read", fsys)
+			}
+			if got := ff.Outstanding(); got != 0 {
 				t.Errorf("Outstanding() = %d, want 0", got)
 			}
 		})
