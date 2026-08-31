@@ -27,6 +27,11 @@ type Fault struct {
 	// number of open files.
 	open   map[uint64]string
 	nextID uint64
+	// maxOpen is the high-water mark of len(open). It never falls, which is
+	// the whole point: Outstanding returning 0 is both "released everything"
+	// and "never held anything", and only a mark that survives the closes can
+	// tell a caller which one it measured.
+	maxOpen int
 
 	p    *fault.Points
 	base FS
@@ -98,6 +103,29 @@ func (f *Fault) Outstanding() int {
 	return len(f.open)
 }
 
+// MaxOutstanding reports the most handles held at once, and it never falls.
+//
+// This is the third of the three readings a leak check needs, and the one that
+// makes the other two trustworthy. Outstanding() == 0 at the end of a scenario
+// is the PASS condition for "nothing leaked". It is also exactly what a
+// scenario that never opened a file returns. The two are indistinguishable, so
+// a sweep over a component that held no handle reports a clean leak check
+// having compared 0 against 0.
+//
+//	if fsys.MaxOutstanding() == 0 {
+//		t.Errorf("nothing was ever opened, so the leak check proved nothing")
+//	}
+//
+// Three sweeps against a peer project hand-wrote that guard before this method
+// existed, each tracking its own high-water mark. Two of them needed it: one
+// configuration held no handle at all, and one component never flushed, and
+// both reported a clean leak result over code they had not exercised.
+func (f *Fault) MaxOutstanding() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.maxOpen
+}
+
 // OpenPaths names the handles Outstanding counts, sorted, one entry for each
 // handle still held.
 //
@@ -150,6 +178,11 @@ func (f *Fault) OpenFile(name string, flag int, perm os.FileMode) (File, error) 
 	id := f.nextID
 	f.nextID++
 	f.open[id] = name
+	// max rather than an if, deliberately. Written as a comparison, the
+	// mutation gate produces `>=` -- which assigns the same value when the two
+	// are equal, so it is an EQUIVALENT mutant that no test can kill, and this
+	// package's floor is 1.00. The builtin carries no operator to mutate.
+	f.maxOpen = max(f.maxOpen, len(f.open))
 	f.mu.Unlock()
 
 	return &faultFile{owner: f, id: id, p: f.p, base: file, err: f.err, name: name, shortWrite: f.shortWrite}, nil

@@ -127,3 +127,104 @@ func TestOpenPathsAndOutstandingNeverDisagree(t *testing.T) {
 			"against an injected failure", checked)
 	}
 }
+
+// MaxOutstanding is the high-water mark, and it exists to make a leak check
+// prove it was live.
+//
+// Outstanding() == 0 after a scenario is the PASS condition for "nothing
+// leaked". It is also what a scenario that never opened a file returns. The
+// two are indistinguishable, so a sweep over a component that held no handle
+// reports a clean leak check having compared 0 against 0.
+//
+// Three separate sweeps against a peer project hand-wrote the same six lines
+// to guard that, tracking a high-water mark themselves. This is those lines.
+func TestMaxOutstandingRemembersTheHighWaterMark(t *testing.T) {
+	dir := t.TempDir()
+	fsys := faultfs.New(&fault.Points{}, faultfs.OS())
+
+	if got := fsys.MaxOutstanding(); got != 0 {
+		t.Errorf("before any open, MaxOutstanding = %d, want 0", got)
+	}
+
+	first, err := fsys.OpenFile(filepath.Join(dir, "a"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := fsys.OpenFile(filepath.Join(dir, "b"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fsys.MaxOutstanding(); got != 2 {
+		t.Errorf("with two handles open, MaxOutstanding = %d, want 2", got)
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// THE PROPERTY THAT MAKES IT USEFUL. Outstanding falls back to zero and
+	// the high-water mark does not, so a caller can tell "released everything"
+	// from "never held anything".
+	if got := fsys.Outstanding(); got != 0 {
+		t.Errorf("after both closes, Outstanding = %d, want 0", got)
+	}
+	if got := fsys.MaxOutstanding(); got != 2 {
+		t.Errorf("after both closes, MaxOutstanding = %d, want 2 -- it must not "+
+			"fall back, or it cannot tell a released handle from an absent one", got)
+	}
+}
+
+// A filesystem that never opened anything reports zero, which is the reading
+// that lets a caller fail its own vacuous check.
+func TestMaxOutstandingIsZeroWhenNothingWasEverOpened(t *testing.T) {
+	dir := t.TempDir()
+
+	for n, p := range fault.Sweep(t) {
+		fsys := faultfs.New(p, faultfs.OS())
+
+		// Only operations that open nothing.
+		_ = fsys.MkdirAll(filepath.Join(dir, "d"), 0o750)
+		_, _ = fsys.Stat(dir)
+
+		if got := fsys.MaxOutstanding(); got != 0 {
+			t.Errorf("point %d: no file was opened, MaxOutstanding = %d, want 0", n, got)
+		}
+	}
+}
+
+// MaxOutstanding can never be below Outstanding, swept across every fault
+// point rather than asserted once.
+func TestMaxOutstandingNeverFallsBelowOutstanding(t *testing.T) {
+	dir := t.TempDir()
+	checked := 0
+
+	for n, p := range fault.Sweep(t) {
+		fsys := faultfs.New(p, faultfs.OS())
+
+		f, err := fsys.OpenFile(filepath.Join(dir, "a"), os.O_CREATE|os.O_RDWR, 0o600)
+		if err == nil {
+			_, _ = f.Write([]byte("x"))
+			if hi, now := fsys.MaxOutstanding(), fsys.Outstanding(); hi < now {
+				t.Errorf("point %d: MaxOutstanding %d is below Outstanding %d while open",
+					n, hi, now)
+			}
+			_ = f.Close()
+		}
+
+		checked++
+		if hi, now := fsys.MaxOutstanding(), fsys.Outstanding(); hi < now {
+			t.Errorf("point %d: MaxOutstanding %d is below Outstanding %d after close",
+				n, hi, now)
+		}
+	}
+
+	// CONTROL -- the sweep injected failures, so the comparison above ran on
+	// error paths and not only on the one clean pass.
+	if checked < 2 {
+		t.Fatalf("the sweep visited %d points, so the invariant was never tested "+
+			"against an injected failure", checked)
+	}
+}
