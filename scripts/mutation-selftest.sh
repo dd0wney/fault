@@ -47,6 +47,28 @@ expect 0 "a package that meets its floor" \
   "$GATE" --root "$DATA/thin" --baseline "$DATA/thin/floor-zero.tsv"
 rm -f "$DATA/thin/floor-zero.tsv"
 
+# The [packages...] filter. Until 2026-08-31 the usage line documented it and
+# nothing read it, so `mutation.sh ./crash/` measured all five packages and
+# said nothing. Measured then: exit 1, with ./ reported, for a package name
+# that does not exist.
+expect 2 "a package argument the baseline does not hold" \
+  "$GATE" --root "$DATA/thin" --baseline "$DATA/thin/baseline.tsv" ./no-such-package/
+
+# The next two rows are a PAIR, and neither means anything alone.
+#
+# The baseline below holds a second row for a package that is not there, so an
+# unfiltered run reaches it and refuses. The filtered run must exclude that row
+# and pass. A filter that did nothing would exit 2 on the second row too, so
+# the pair is what proves the filter excludes rather than merely being
+# accepted.
+printf './\t0.00\tany score meets this\n./absent/\t0.00\tno such package: an unfiltered run must reach it\n' \
+  > "$DATA/thin/two-rows.tsv"
+expect 2 "an unfiltered run reaches a package it cannot measure" \
+  "$GATE" --root "$DATA/thin" --baseline "$DATA/thin/two-rows.tsv"
+expect 0 "a package argument excludes the other rows" \
+  "$GATE" --root "$DATA/thin" --baseline "$DATA/thin/two-rows.tsv" ./
+rm -f "$DATA/thin/two-rows.tsv"
+
 if [ "$FAILURES" != 0 ]; then
   echo "selftest: $FAILURES fixture(s) wrong — the gate is not trustworthy" >&2
   exit 1
