@@ -69,7 +69,13 @@ done
 
 GUARDED=0
 if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-  DIRTY="$(git -C "$ROOT" status --porcelain 2>/dev/null)"
+  # ONLY Go files. The tool mutates .go source, so that is the hazard, and it
+  # is the whole hazard. Keying on everything would fight this repository's own
+  # documented workflow: every baseline row says "re-read this number after any
+  # commit that adds code here", so an operator editing mutation-baseline.tsv
+  # and re-running the gate is doing the right thing and must not be refused.
+  # The selftest also writes a temporary baseline beside its fixtures.
+  DIRTY="$(git -C "$ROOT" status --porcelain -- '*.go' 2>/dev/null)"
   if [ -n "$DIRTY" ]; then
     echo "mutation: the working tree has uncommitted changes, and this script" >&2
     echo "mutation: rewrites source files in place. Refusing to start, because" >&2
@@ -88,10 +94,9 @@ if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
   # this script's own debris.
   restore_tree() {
     status=$?
-    if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]; then
+    if [ -n "$(git -C "$ROOT" status --porcelain -- '*.go' 2>/dev/null)" ]; then
       echo "mutation: restoring the working tree after an in-place run" >&2
-      git -C "$ROOT" checkout -- . 2>/dev/null || true
-      git -C "$ROOT" clean -fdq -e '*.tsv' -- '*.go.tmp' 2>/dev/null || true
+      git -C "$ROOT" checkout -- '*.go' 2>/dev/null || true
       find "$ROOT" -name '*.go.tmp' -not -path '*/.git/*' -delete 2>/dev/null || true
     fi
     exit $status
