@@ -53,6 +53,10 @@ type testDriver struct {
 	execErr      error
 	stmtQueryErr error
 
+	// lastStmt is the statement most recently handed out, so a test can ask it
+	// what context it saw.
+	lastStmt *testStmt
+
 	// connectErr, when set, is what the base returns instead of a connection.
 	// A base that cannot fail leaves the adapter's own error path untested,
 	// and the mutation gate reported exactly that: removing `return nil, err`
@@ -75,6 +79,18 @@ func (d *testDriver) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, err
 	}
 	return &testConn{d: d}, nil
+}
+
+// stmtCtxErr reports what the most recently prepared statement saw as
+// ctx.Err() when QueryContext ran on it.
+func (d *testDriver) stmtCtxErr() error {
+	d.mu.Lock()
+	s := d.lastStmt
+	d.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+	return s.ctxErr()
 }
 
 func (d *testDriver) resets() int {
@@ -114,7 +130,11 @@ func (c *testConn) Prepare(query string) (driver.Stmt, error) {
 	c.d.mu.Lock()
 	qerr := c.d.stmtQueryErr
 	c.d.mu.Unlock()
-	return &testStmt{queryErr: qerr}, nil
+	st := &testStmt{queryErr: qerr}
+	c.d.mu.Lock()
+	c.d.lastStmt = st
+	c.d.mu.Unlock()
+	return st, nil
 }
 
 func (c *testConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
@@ -185,7 +205,21 @@ func (c *testConn) ResetSession(ctx context.Context) error {
 	return nil
 }
 
-type testStmt struct{ queryErr error }
+type testStmt struct {
+	queryErr error
+	// lastCtxErr records ctx.Err() at the moment QueryContext ran. It is what
+	// proves a caller's cancellation reached the base driver rather than being
+	// dropped by the wrapper, which is exactly what ctxutil.go:81 does when
+	// StmtQueryContext is missing.
+	mu         sync.Mutex
+	lastCtxErr error
+}
+
+func (s *testStmt) ctxErr() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastCtxErr
+}
 
 var (
 	_ driver.Stmt             = (*testStmt)(nil)
@@ -198,6 +232,9 @@ func (s *testStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (d
 }
 
 func (s *testStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	s.mu.Lock()
+	s.lastCtxErr = ctx.Err()
+	s.mu.Unlock()
 	if s.queryErr != nil {
 		return nil, s.queryErr
 	}
@@ -289,7 +326,10 @@ func (c *plainConn) Prepare(query string) (driver.Stmt, error) {
 	if c.d.prepareErr != nil {
 		return nil, c.d.prepareErr
 	}
-	return &testStmt{}, nil
+	// plainStmt, not testStmt: this driver's whole purpose is to implement the
+	// required methods and nothing else, and a testStmt would carry the two
+	// context interfaces with it.
+	return plainStmt{}, nil
 }
 
 func (c *plainConn) Close() error { return nil }
@@ -299,4 +339,34 @@ func (c *plainConn) Begin() (driver.Tx, error) {
 		return nil, c.d.beginErr
 	}
 	return &testTx{}, nil
+}
+
+// plainStmt and plainRows implement the REQUIRED methods and nothing else.
+//
+// Without them the wrapper's `if !ok` branches at the statement and rows
+// levels are unreachable, which is the shape the mutation gate reported twice
+// already on this package: a fixture that resembles the wrapper's own set
+// cannot test the wrapper.
+type plainStmt struct{}
+
+func (plainStmt) Close() error  { return nil }
+func (plainStmt) NumInput() int { return 0 }
+func (plainStmt) Exec([]driver.Value) (driver.Result, error) {
+	return testResult{}, nil
+}
+func (plainStmt) Query([]driver.Value) (driver.Rows, error) {
+	return &plainRows{n: 2}, nil
+}
+
+type plainRows struct{ i, n int }
+
+func (r *plainRows) Columns() []string { return []string{"n"} }
+func (r *plainRows) Close() error      { return nil }
+func (r *plainRows) Next(dest []driver.Value) error {
+	if r.i >= r.n {
+		return io.EOF
+	}
+	dest[0] = int64(r.i)
+	r.i++
+	return nil
 }

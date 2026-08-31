@@ -1234,3 +1234,348 @@ func TestABaseStatementQueryFailurePassesThroughUnchanged(t *testing.T) {
 		t.Error("a base failure was reported as an injected one")
 	}
 }
+
+// THE BEHAVIOUR THE STATEMENT-LEVEL GAP REMOVED, asserted directly.
+//
+// ctxutil.go:81 calls si.Query(dargs) when a Stmt has no StmtQueryContext, and
+// the context is discarded on the way. A caller's cancellation then stops
+// working the moment the driver is wrapped, and nothing reports it: the call
+// count does not change and no error appears.
+//
+// This test does not read the interface list. It cancels a context and asks
+// the base driver what it saw.
+func TestACancelledContextReachesTheBaseThroughTheWrapper(t *testing.T) {
+	base := &testDriver{}
+	f := faultsql.New(&fault.Points{}, base)
+
+	c, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	st, err := c.Prepare("select n")
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	q, ok := st.(driver.StmtQueryContext)
+	if !ok {
+		t.Fatal("the wrapped statement does not implement driver.StmtQueryContext, so database/sql would drop the caller's context")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rs, err := q.QueryContext(ctx, nil)
+	if rs != nil {
+		_ = rs.Close()
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("QueryContext: %v", err)
+	}
+
+	// The base saw the cancellation. Without StmtQueryContext on the wrapper
+	// this is nil, because the context never travelled.
+	if got := base.stmtCtxErr(); !errors.Is(got, context.Canceled) {
+		t.Errorf("the base driver saw ctx.Err() = %v, want context.Canceled — the wrapper dropped the context", got)
+	}
+}
+
+// The statement's context methods REPLACE Exec and Query rather than adding a
+// call, so each consumes exactly one operation index.
+//
+// Two would be worse than none: wrapping a driver would move every armed point
+// after the first statement, and the sweep would be measuring the adapter.
+func TestTheStatementContextMethodsCountOnce(t *testing.T) {
+	// closeIdx differs between the two, and stating it beats assuming it.
+	// QueryContext hands back a result set, and closing that set is itself an
+	// operation, so the connection close lands one later. The first version of
+	// this test wrote 5 for both and failed -- correctly.
+	for _, c := range []struct {
+		name     string
+		closeIdx int
+		call     func(*testing.T, driver.Stmt) error
+	}{
+		{"ExecContext", 5, func(t *testing.T, st driver.Stmt) error {
+			e, ok := st.(driver.StmtExecContext)
+			if !ok {
+				t.Fatal("no driver.StmtExecContext on the wrapped statement")
+			}
+			_, err := e.ExecContext(context.Background(), nil)
+			return err
+		}},
+		{"QueryContext", 6, func(t *testing.T, st driver.Stmt) error {
+			q, ok := st.(driver.StmtQueryContext)
+			if !ok {
+				t.Fatal("no driver.StmtQueryContext on the wrapped statement")
+			}
+			rs, err := q.QueryContext(context.Background(), nil)
+			if rs != nil {
+				_ = rs.Close()
+			}
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			reached := false
+			for n, p := range fault.Sweep(t) {
+				f := faultsql.New(p, &testDriver{})
+				conn, err := f.Connect(context.Background()) // 1
+				if err != nil {
+					continue
+				}
+				st, err := conn.Prepare("select n") // 2
+				if err != nil {
+					_ = conn.Close()
+					continue
+				}
+				got := c.call(t, st) // 3, and for QueryContext the rows close is 4
+				_ = st.Close()
+				closeErr := conn.Close()
+
+				switch n {
+				case 3:
+					reached = true
+					if !errors.Is(got, faultsql.ErrInjected) {
+						t.Errorf("%s = %v with operation 3 armed, want the injected error", c.name, got)
+					}
+				case c.closeIdx:
+					// The count did not move. If the context method consumed
+					// two indexes, the connection close would sit one later.
+					if !errors.Is(closeErr, faultsql.ErrInjected) {
+						t.Errorf("conn.Close() = %v with operation %d armed, want the injected error — %s consumed more than one index",
+							closeErr, c.closeIdx, c.name)
+					}
+				}
+			}
+			if !reached {
+				t.Fatalf("the sweep never armed operation 3, so %s was not asserted", c.name)
+			}
+		})
+	}
+}
+
+// The column-type methods describe the shape of the result set. They are
+// forwarded, and none of them counts.
+//
+// Counting them would make the operation index depend on how often a caller
+// asked about the schema, which is not work the database performs. It is the
+// same rule Columns and NumInput follow.
+func TestTheColumnTypeMethodsAreForwardedAndDoNotCount(t *testing.T) {
+	base := &testDriver{rows: 2}
+	f := faultsql.New(&fault.Points{}, base)
+	c, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	rs := queryRows(t, c)
+	defer func() { _ = rs.Close() }()
+
+	st, ok := rs.(driver.RowsColumnTypeScanType)
+	if !ok {
+		t.Fatal("the wrapped rows do not implement driver.RowsColumnTypeScanType")
+	}
+	if got := st.ColumnTypeScanType(0); got != reflect.TypeOf(int64(0)) {
+		t.Errorf("ColumnTypeScanType(0) = %v, want int64 — the wrapper is not forwarding", got)
+	}
+	dt, ok := rs.(driver.RowsColumnTypeDatabaseTypeName)
+	if !ok {
+		t.Fatal("the wrapped rows do not implement driver.RowsColumnTypeDatabaseTypeName")
+	}
+	if got := dt.ColumnTypeDatabaseTypeName(0); got != "BIGINT" {
+		t.Errorf("ColumnTypeDatabaseTypeName(0) = %q, want BIGINT", got)
+	}
+
+	// The forwarding half is done. The "does not count" half needs a SWEEP,
+	// and the first version of this test did not have one: it asked the
+	// questions under a zero Points, where Trip never fires, so adding a count
+	// to ColumnTypeScanType changed nothing observable and the control did not
+	// fire. A no-count claim is only testable where something is armed.
+	assertSchemaQuestionsTakeNoIndex(t)
+}
+
+// assertSchemaQuestionsTakeNoIndex arms operation 3 and requires the Next to
+// fail. A hundred schema questions sit between the query and the Next, so if
+// any of them consumed an index, operation 3 would be one of THEM and the Next
+// would succeed.
+func assertSchemaQuestionsTakeNoIndex(t *testing.T) {
+	t.Helper()
+	reached := false
+	for n, p := range fault.Sweep(t) {
+		f := faultsql.New(p, &testDriver{rows: 2})
+		c, err := f.Connect(context.Background()) // 1
+		if err != nil {
+			continue
+		}
+		rs, err := queryRowsErr(c) // 2
+		if err != nil {
+			_ = c.Close()
+			continue
+		}
+		for range 100 { // must take none
+			if v, ok := rs.(driver.RowsColumnTypeScanType); ok {
+				_ = v.ColumnTypeScanType(0)
+			}
+			if v, ok := rs.(driver.RowsColumnTypeDatabaseTypeName); ok {
+				_ = v.ColumnTypeDatabaseTypeName(0)
+			}
+			if v, ok := rs.(driver.RowsColumnTypeNullable); ok {
+				_, _ = v.ColumnTypeNullable(0)
+			}
+			if v, ok := rs.(driver.RowsColumnTypeLength); ok {
+				_, _ = v.ColumnTypeLength(0)
+			}
+			if v, ok := rs.(driver.RowsColumnTypePrecisionScale); ok {
+				_, _, _ = v.ColumnTypePrecisionScale(0)
+			}
+			if v, ok := rs.(driver.RowsNextResultSet); ok {
+				_ = v.HasNextResultSet()
+			}
+		}
+		nextErr := rs.Next(make([]driver.Value, 1)) // 3
+		_ = rs.Close()
+		_ = c.Close()
+
+		if n != 3 {
+			continue
+		}
+		reached = true
+		if !errors.Is(nextErr, faultsql.ErrInjected) {
+			t.Errorf("Next() = %v with operation 3 armed, want the injected error — a schema question took an index", nextErr)
+		}
+	}
+	if !reached {
+		t.Fatal("the sweep never armed operation 3, so nothing was asserted")
+	}
+}
+
+// NextResultSet is the one member of that group that DOES count, and the new
+// result set gets its own budget.
+//
+// It advances to another result set, which is work the database performs. The
+// row rule is one index per result set, and a second result set is a second
+// one.
+func TestNextResultSetCountsAndResetsTheRowBudget(t *testing.T) {
+	reached := false
+	for n, p := range fault.Sweep(t) {
+		f := faultsql.New(p, &testDriver{rows: 2})
+		c, err := f.Connect(context.Background()) // 1
+		if err != nil {
+			continue
+		}
+		rs, err := queryRowsErr(c) // 2
+		if err != nil {
+			_ = c.Close()
+			continue
+		}
+		nrs, ok := rs.(driver.RowsNextResultSet)
+		if !ok {
+			t.Fatal("the wrapped rows do not implement driver.RowsNextResultSet")
+		}
+		nextErr := nrs.NextResultSet() // 3
+		_ = rs.Close()
+		_ = c.Close()
+
+		if n != 3 {
+			continue
+		}
+		reached = true
+		if !errors.Is(nextErr, faultsql.ErrInjected) {
+			t.Errorf("NextResultSet() = %v with operation 3 armed, want the injected error", nextErr)
+		}
+	}
+	if !reached {
+		t.Fatal("the sweep never armed operation 3, so nothing was asserted")
+	}
+}
+
+// A base that offers only the required methods gets driver.ErrSkip from the
+// statement's context methods, and zero values from the column-type ones.
+//
+// ErrSkip is the documented way to say "continue as if unimplemented"
+// (driver.go:150), so database/sql takes the path it would have taken without
+// the method. No index is consumed, because no operation happened.
+func TestTheStatementAndRowsFallbacksAgainstAPlainBase(t *testing.T) {
+	f := faultsql.New(&fault.Points{}, &plainDriver{})
+	c, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	st, err := c.Prepare("select n")
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	e, ok := st.(driver.StmtExecContext)
+	if !ok {
+		t.Fatal("the wrapped statement does not implement driver.StmtExecContext")
+	}
+	if _, err := e.ExecContext(context.Background(), nil); !errors.Is(err, driver.ErrSkip) {
+		t.Errorf("ExecContext against a plain base = %v, want driver.ErrSkip", err)
+	}
+	q, ok := st.(driver.StmtQueryContext)
+	if !ok {
+		t.Fatal("the wrapped statement does not implement driver.StmtQueryContext")
+	}
+	if _, err := q.QueryContext(context.Background(), nil); !errors.Is(err, driver.ErrSkip) {
+		t.Errorf("QueryContext against a plain base = %v, want driver.ErrSkip", err)
+	}
+
+	// The rows side: a plain base gives zero values rather than a panic.
+	rs, err := st.Query(nil) //nolint:staticcheck // driver.Stmt requires Query, so the wrapper is tested through it
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer func() { _ = rs.Close() }()
+
+	if v, ok := rs.(driver.RowsColumnTypeDatabaseTypeName); !ok {
+		t.Error("the wrapped rows do not implement driver.RowsColumnTypeDatabaseTypeName")
+	} else if got := v.ColumnTypeDatabaseTypeName(0); got != "" {
+		t.Errorf("ColumnTypeDatabaseTypeName against a plain base = %q, want the empty string", got)
+	}
+	if v, ok := rs.(driver.RowsColumnTypeNullable); !ok {
+		t.Error("the wrapped rows do not implement driver.RowsColumnTypeNullable")
+	} else if _, known := v.ColumnTypeNullable(0); known {
+		t.Error("ColumnTypeNullable against a plain base reported the answer as known")
+	}
+	if v, ok := rs.(driver.RowsColumnTypeLength); !ok {
+		t.Error("the wrapped rows do not implement driver.RowsColumnTypeLength")
+	} else if _, known := v.ColumnTypeLength(0); known {
+		t.Error("ColumnTypeLength against a plain base reported the answer as known")
+	}
+	if v, ok := rs.(driver.RowsColumnTypePrecisionScale); !ok {
+		t.Error("the wrapped rows do not implement driver.RowsColumnTypePrecisionScale")
+	} else if _, _, known := v.ColumnTypePrecisionScale(0); known {
+		t.Error("ColumnTypePrecisionScale against a plain base reported the answer as known")
+	}
+	if v, ok := rs.(driver.RowsColumnTypeScanType); !ok {
+		t.Error("the wrapped rows do not implement driver.RowsColumnTypeScanType")
+	} else if got := v.ColumnTypeScanType(0); got.Kind() != reflect.Interface {
+		t.Errorf("ColumnTypeScanType against a plain base = %v, want the empty interface", got)
+	}
+	if v, ok := rs.(driver.RowsNextResultSet); !ok {
+		t.Error("the wrapped rows do not implement driver.RowsNextResultSet")
+	} else {
+		if v.HasNextResultSet() {
+			t.Error("HasNextResultSet against a plain base reported another result set")
+		}
+		if err := v.NextResultSet(); err == nil {
+			t.Error("NextResultSet against a plain base returned nil, want an error")
+		}
+	}
+}
+
+func queryRowsErr(c driver.Conn) (driver.Rows, error) {
+	q, ok := c.(driver.QueryerContext)
+	if !ok {
+		return nil, errBase
+	}
+	return q.QueryContext(context.Background(), "select n", nil)
+}

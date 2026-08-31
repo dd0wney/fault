@@ -6,6 +6,8 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
+	"reflect"
 	"sync"
 
 	"github.com/dd0wney/fault"
@@ -461,6 +463,120 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 		return nil, err
 	}
 	return s.f.wrapRows(rs), nil
+}
+
+// ExecContext is [driver.StmtExecContext].
+//
+// It REPLACES Exec rather than adding a call, so it consumes exactly one
+// operation index, the same one Exec would have. If it consumed two, wrapping
+// a driver would move every armed point after the first statement.
+//
+// Not implementing it costs no call and drops the caller's context:
+// ctxutil.go:81 falls through to Exec with the context discarded, so a
+// cancellation that works against the bare driver stops working once wrapped.
+func (s *stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	e, ok := s.base.(driver.StmtExecContext)
+	if !ok {
+		return nil, driver.ErrSkip
+	}
+	if s.f.trip() {
+		return nil, ErrInjected
+	}
+	return e.ExecContext(ctx, args)
+}
+
+// QueryContext is [driver.StmtQueryContext]. The same reasoning as ExecContext,
+// and it wraps the result set so the row rule still applies.
+func (s *stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	q, ok := s.base.(driver.StmtQueryContext)
+	if !ok {
+		return nil, driver.ErrSkip
+	}
+	if s.f.trip() {
+		return nil, ErrInjected
+	}
+	rs, err := q.QueryContext(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	return s.f.wrapRows(rs), nil
+}
+
+// The column-type interfaces of [driver.Rows], forwarded.
+//
+// NONE OF THEM COUNTS. Each describes the shape of the result set rather than
+// performing an operation on the database, exactly as Columns and NumInput do.
+// database/sql reads them from Rows.ColumnTypes(), which a caller may invoke at
+// any time and any number of times, so counting them would make the operation
+// index depend on how often the caller asked about the schema.
+//
+// Each returns the zero value when the base does not offer the interface. That
+// is unreachable through database/sql, which type-asserts before calling, and
+// it is reachable through a caller that holds the driver.Rows directly.
+func (r *rows) ColumnTypeScanType(index int) reflect.Type {
+	if v, ok := r.base.(driver.RowsColumnTypeScanType); ok {
+		return v.ColumnTypeScanType(index)
+	}
+	return reflect.TypeOf(new(any)).Elem()
+}
+
+func (r *rows) ColumnTypeDatabaseTypeName(index int) string {
+	if v, ok := r.base.(driver.RowsColumnTypeDatabaseTypeName); ok {
+		return v.ColumnTypeDatabaseTypeName(index)
+	}
+	return ""
+}
+
+func (r *rows) ColumnTypeNullable(index int) (nullable, ok bool) {
+	if v, is := r.base.(driver.RowsColumnTypeNullable); is {
+		return v.ColumnTypeNullable(index)
+	}
+	return false, false
+}
+
+func (r *rows) ColumnTypeLength(index int) (length int64, ok bool) {
+	if v, is := r.base.(driver.RowsColumnTypeLength); is {
+		return v.ColumnTypeLength(index)
+	}
+	return 0, false
+}
+
+func (r *rows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok bool) {
+	if v, is := r.base.(driver.RowsColumnTypePrecisionScale); is {
+		return v.ColumnTypePrecisionScale(index)
+	}
+	return 0, 0, false
+}
+
+// HasNextResultSet does not count: it is a question about the result set, like
+// the column types above.
+func (r *rows) HasNextResultSet() bool {
+	v, ok := r.base.(driver.RowsNextResultSet)
+	return ok && v.HasNextResultSet()
+}
+
+// NextResultSet DOES count, and it is the one member of this group that does.
+//
+// It advances to another result set, which is work the database performs, and
+// the row rule is one index per result set. A second result set is a second
+// one. Treating it as a property would let a multi-statement query consume a
+// single index however many result sets it returned.
+//
+// The new result set gets its own budget: counted and armed afresh, exactly as
+// a Rows returned by a second query would be.
+func (r *rows) NextResultSet() error {
+	v, ok := r.base.(driver.RowsNextResultSet)
+	if !ok {
+		return io.EOF
+	}
+	if r.f.trip() {
+		return ErrInjected
+	}
+	if err := v.NextResultSet(); err != nil {
+		return err
+	}
+	r.counted, r.armed, r.n = false, false, 0
+	return nil
 }
 
 // tx is one transaction.
