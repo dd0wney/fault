@@ -335,14 +335,17 @@ func (s *stmt) Exec(args []driver.Value) (driver.Result, error) {
 	if s.f.trip() {
 		return nil, ErrInjected
 	}
-	return s.base.Exec(args)
+	// SA1019: driver.Stmt REQUIRES Exec, so an implementation must provide it
+	// and a wrapper must forward to the base's. StmtExecContext is additional.
+	return s.base.Exec(args) //nolint:staticcheck // driver.Stmt requires Exec; a wrapper must forward it
 }
 
 func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 	if s.f.trip() {
 		return nil, ErrInjected
 	}
-	return s.base.Query(args)
+	// SA1019: the same as Exec above. driver.Stmt requires Query.
+	return s.base.Query(args) //nolint:staticcheck // driver.Stmt requires Query; a wrapper must forward it
 }
 
 // tx is one transaction.
