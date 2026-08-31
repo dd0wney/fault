@@ -911,3 +911,207 @@ func TestANamedRowPastTheEndIsRefused(t *testing.T) {
 		t.Fatal("the sweep never armed operation 3, so nothing was asserted")
 	}
 }
+
+// QueryContext and ExecContext are operations, and each counts.
+func TestTheQueryAndExecContextMethodsEachCount(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		call func(*testing.T, driver.Conn) error
+	}{
+		{"QueryContext", func(t *testing.T, c driver.Conn) error {
+			q, ok := c.(driver.QueryerContext)
+			if !ok {
+				t.Fatal("the wrapper does not implement driver.QueryerContext")
+			}
+			rs, err := q.QueryContext(context.Background(), "select n", nil)
+			if rs != nil {
+				_ = rs.Close()
+			}
+			return err
+		}},
+		{"ExecContext", func(t *testing.T, c driver.Conn) error {
+			e, ok := c.(driver.ExecerContext)
+			if !ok {
+				t.Fatal("the wrapper does not implement driver.ExecerContext")
+			}
+			_, err := e.ExecContext(context.Background(), "update t", nil)
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			reached := false
+			for n, p := range fault.Sweep(t) {
+				f := faultsql.New(p, &testDriver{})
+				conn, err := f.Connect(context.Background()) // 1
+				if err != nil {
+					continue
+				}
+				got := c.call(t, conn) // 2
+				_ = conn.Close()
+
+				if n != 2 {
+					continue
+				}
+				reached = true
+				if !errors.Is(got, faultsql.ErrInjected) {
+					t.Errorf("%s = %v with operation 2 armed, want the injected error", c.name, got)
+				}
+			}
+			if !reached {
+				t.Fatalf("the sweep never armed operation 2, so %s was not asserted", c.name)
+			}
+		})
+	}
+}
+
+// A base that implements neither QueryerContext nor ExecerContext gets
+// driver.ErrSkip, which is the documented way to say "continue as if
+// unimplemented" (driver.go:150).
+//
+// It must consume NO operation index, because no operation happened. Returning
+// the injected error instead would fail a query the base could have served
+// through the prepare-then-query path.
+func TestErrSkipWhenTheBaseImplementsNeither(t *testing.T) {
+	f := faultsql.New(&fault.Points{}, &plainDriver{})
+	c, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	q, ok := c.(driver.QueryerContext)
+	if !ok {
+		t.Fatal("the wrapper does not implement driver.QueryerContext")
+	}
+	if _, err := q.QueryContext(context.Background(), "select n", nil); !errors.Is(err, driver.ErrSkip) {
+		t.Errorf("QueryContext against a base without it = %v, want driver.ErrSkip", err)
+	}
+
+	e, ok := c.(driver.ExecerContext)
+	if !ok {
+		t.Fatal("the wrapper does not implement driver.ExecerContext")
+	}
+	if _, err := e.ExecContext(context.Background(), "update t", nil); !errors.Is(err, driver.ErrSkip) {
+		t.Errorf("ExecContext against a base without it = %v, want driver.ErrSkip", err)
+	}
+}
+
+// A base failure from a query or an exec passes through unchanged.
+func TestABaseQueryFailurePassesThroughUnchanged(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		base *testDriver
+		call func(*testing.T, driver.Conn) error
+	}{
+		{"QueryContext", &testDriver{queryErr: errBase}, func(t *testing.T, c driver.Conn) error {
+			q, ok := c.(driver.QueryerContext)
+			if !ok {
+				t.Fatal("the wrapper does not implement driver.QueryerContext")
+			}
+			_, err := q.QueryContext(context.Background(), "select n", nil)
+			return err
+		}},
+		{"ExecContext", &testDriver{execErr: errBase}, func(t *testing.T, c driver.Conn) error {
+			e, ok := c.(driver.ExecerContext)
+			if !ok {
+				t.Fatal("the wrapper does not implement driver.ExecerContext")
+			}
+			_, err := e.ExecContext(context.Background(), "update t", nil)
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := faultsql.New(&fault.Points{}, c.base)
+			conn, err := f.Connect(context.Background())
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			defer func() { _ = conn.Close() }()
+
+			if got := c.call(t, conn); !errors.Is(got, errBase) {
+				t.Errorf("%s = %v, want the base driver's own error unchanged", c.name, got)
+			}
+		})
+	}
+}
+
+// rows.Close is an operation, and it closes the real result set whether or not
+// it trips.
+func TestRowsCloseCounts(t *testing.T) {
+	reached := false
+	for n, p := range fault.Sweep(t) {
+		f := faultsql.New(p, &testDriver{rows: 2})
+		c, err := f.Connect(context.Background()) // 1
+		if err != nil {
+			continue
+		}
+		q, ok := c.(driver.QueryerContext)
+		if !ok {
+			t.Fatal("the wrapper does not implement driver.QueryerContext")
+		}
+		rs, err := q.QueryContext(context.Background(), "select n", nil) // 2
+		if err != nil {
+			_ = c.Close()
+			continue
+		}
+		for { // 3
+			if e := rs.Next(make([]driver.Value, 1)); e != nil {
+				break
+			}
+		}
+		closeErr := rs.Close() // 4
+		_ = c.Close()
+
+		if n != 4 {
+			continue
+		}
+		reached = true
+		if !errors.Is(closeErr, faultsql.ErrInjected) {
+			t.Errorf("rows.Close() = %v with operation 4 armed, want the injected error", closeErr)
+		}
+	}
+	if !reached {
+		t.Fatal("the sweep never armed operation 4, so nothing was asserted")
+	}
+}
+
+// A pass that arms NOTHING in the result set must deliver every row.
+//
+// The mutation gate found this gap by turning `if r.armed && r.n == r.at` into
+// `if true && r.n == r.at`, which fails the first row of every pass, and no
+// test noticed. A fault injector that fails an operation it was not asked to
+// fail reports defects the code under test does not have, and every later
+// finding then needs a person to re-derive whether it is real.
+func TestAnUnarmedResultSetDeliversEveryRow(t *testing.T) {
+	f := faultsql.New(&fault.Points{}, &testDriver{rows: 7})
+	c, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	q, ok := c.(driver.QueryerContext)
+	if !ok {
+		t.Fatal("the wrapper does not implement driver.QueryerContext")
+	}
+	rs, err := q.QueryContext(context.Background(), "select n", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer func() { _ = rs.Close() }()
+
+	seen := 0
+	for {
+		e := rs.Next(make([]driver.Value, 1))
+		if errors.Is(e, faultsql.ErrInjected) {
+			t.Fatalf("row %d failed with the injected error, and a zero Points arms nothing", seen)
+		}
+		if e != nil {
+			break
+		}
+		seen++
+	}
+	if seen != 7 {
+		t.Errorf("the drain saw %d rows, want 7", seen)
+	}
+}

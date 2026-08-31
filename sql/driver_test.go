@@ -43,6 +43,11 @@ type testDriver struct {
 	// the operation count does NOT follow it.
 	rows int
 
+	// queryErr and execErr make the pass-through paths of QueryContext and
+	// ExecContext reachable.
+	queryErr error
+	execErr  error
+
 	// connectErr, when set, is what the base returns instead of a connection.
 	// A base that cannot fail leaves the adapter's own error path untested,
 	// and the mutation gate reported exactly that: removing `return nil, err`
@@ -130,6 +135,12 @@ func (c *testConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.T
 }
 
 func (c *testConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	c.d.mu.Lock()
+	err := c.d.queryErr
+	c.d.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	return c.rowsOf(), nil
 }
 
@@ -148,6 +159,12 @@ func (c *testConn) rowsOf() *testRows {
 }
 
 func (c *testConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	c.d.mu.Lock()
+	err := c.d.execErr
+	c.d.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	return testResult{}, nil
 }
 
@@ -160,7 +177,7 @@ func (c *testConn) ResetSession(ctx context.Context) error {
 	return nil
 }
 
-type testStmt struct{}
+type testStmt struct{ queryErr error }
 
 func (s *testStmt) Close() error  { return nil }
 func (s *testStmt) NumInput() int { return 0 }
@@ -168,6 +185,9 @@ func (s *testStmt) Exec(args []driver.Value) (driver.Result, error) {
 	return testResult{}, nil
 }
 func (s *testStmt) Query(args []driver.Value) (driver.Rows, error) {
+	if s.queryErr != nil {
+		return nil, s.queryErr
+	}
 	return &testRows{rows: [][]driver.Value{{int64(1)}, {int64(2)}}}, nil
 }
 
