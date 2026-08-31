@@ -1777,3 +1777,131 @@ func TestTheSecondResultSetCountsItsRowsFromZero(t *testing.T) {
 		t.Fatal("the sweep never armed operation 5, so nothing was asserted")
 	}
 }
+
+// Connector bridges a driver.Driver to the driver.Connector this package takes.
+//
+// THE CASE IT EXISTS FOR is a driver that implements neither Connector nor
+// DriverContext, because that is what a real one does. Measured on
+// modernc.org/sqlite v1.57.0 in the spike beside this repository:
+// Connector=false, DriverContext=false. Both in-module fixtures already
+// implement Connect, so neither resembles the case, and openOnlyDriver is
+// written to be the one that does.
+func TestConnectorBridgesADriverThatOffersOnlyOpen(t *testing.T) {
+	base := &openOnlyDriver{}
+	c, err := faultsql.Connector(base, "file:spike.db")
+	if err != nil {
+		t.Fatalf("Connector: %v", err)
+	}
+	if got := c.Driver(); got != driver.Driver(base) {
+		t.Errorf("Driver() = %v, want the driver it was given", got)
+	}
+
+	f := faultsql.New(&fault.Points{}, c)
+	conn, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect through the bridge: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	opens, dsn := base.counts()
+	if opens != 1 {
+		t.Errorf("the driver saw %d Open(s), want 1", opens)
+	}
+	if dsn != "file:spike.db" {
+		t.Errorf("the driver was given the DSN %q, want file:spike.db", dsn)
+	}
+}
+
+// A driver that offers OpenConnector gets its own, not the DSN fallback.
+//
+// This follows sql.Open rather than inventing a rule. The connector a driver
+// builds may hold parsed state the DSN string does not, and the fallback would
+// re-parse the DSN on every connect instead.
+func TestConnectorPrefersOpenConnectorWhenTheDriverHasIt(t *testing.T) {
+	base := &ctxDriver{}
+	c, err := faultsql.Connector(base, "file:spike.db")
+	if err != nil {
+		t.Fatalf("Connector: %v", err)
+	}
+	if got := base.connectors(); got != 1 {
+		t.Errorf("OpenConnector was called %d time(s), want 1 — the bridge took the DSN fallback for a DriverContext", got)
+	}
+
+	// ctxDriver.Open returns an error naming this exact mistake, so a bridge
+	// that took the fallback would fail here too rather than pass quietly.
+	f := faultsql.New(&fault.Points{}, c)
+	conn, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect through the bridge: %v", err)
+	}
+	_ = conn.Close()
+}
+
+// A DSN the driver rejects comes back from Connector, not from the first
+// Connect.
+//
+// A sweep that discovered it on pass one would report a caller's mistake as
+// the neighbour of an injected failure, and the two read alike.
+func TestConnectorReturnsTheDriversOwnRefusal(t *testing.T) {
+	t.Run("OpenConnector", func(t *testing.T) {
+		base := &ctxDriver{openConnErr: errBase}
+		if _, err := faultsql.Connector(base, "bad"); !errors.Is(err, errBase) {
+			t.Errorf("Connector = %v, want the driver's own error unchanged", err)
+		}
+	})
+
+	// The fallback cannot refuse a DSN, because driver.Driver has no method
+	// that inspects one before Open. So the refusal arrives at Connect, and
+	// unchanged.
+	t.Run("Open", func(t *testing.T) {
+		base := &openOnlyDriver{openErr: errBase}
+		c, err := faultsql.Connector(base, "bad")
+		if err != nil {
+			t.Fatalf("Connector refused a DSN the driver has not seen yet: %v", err)
+		}
+		f := faultsql.New(&fault.Points{}, c)
+		if _, err := f.Connect(context.Background()); !errors.Is(err, errBase) {
+			t.Errorf("Connect = %v, want the driver's own error unchanged", err)
+		}
+	})
+}
+
+// Inserting the bridge does not shift the operation indexes.
+//
+// THIS IS STRUCTURAL, AND THE COMMENT SAYS SO RATHER THAN IMPLYING A CONTROL
+// THAT CANNOT EXIST. Connector is a free function that receives no
+// *fault.Points, so it cannot count even if someone wanted it to; no mutation
+// of the bridge can make this test fail. An attempt at such a control was
+// written and was a no-op, which is the shape this repository has already
+// recorded twice today.
+//
+// What the test pins is the observable consequence: a caller who reaches the
+// package through Connector sees the connect at index 1, exactly as a caller
+// who builds a driver.Connector by hand does. That is the claim a reader cares
+// about, and it would break if the bridge ever gained a Points.
+func TestTheBridgeConsumesNoOperationIndex(t *testing.T) {
+	reached := false
+	for n, p := range fault.Sweep(t) {
+		base := &openOnlyDriver{}
+		c, err := faultsql.Connector(base, "file:spike.db")
+		if err != nil {
+			t.Fatalf("Connector: %v", err)
+		}
+		f := faultsql.New(p, c)
+
+		conn, err := f.Connect(context.Background()) // 1
+		if err != nil {
+			if n == 1 {
+				reached = true
+				if !errors.Is(err, faultsql.ErrInjected) {
+					t.Errorf("Connect = %v with operation 1 armed, want the injected error — the bridge took an index", err)
+				}
+			}
+			continue
+		}
+		_ = conn.Close()
+	}
+	if !reached {
+		t.Fatal("the sweep never armed operation 1, so nothing was asserted")
+	}
+}

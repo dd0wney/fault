@@ -3,6 +3,7 @@ package sql_test
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"io"
 	"reflect"
 	"sync"
@@ -406,4 +407,75 @@ func (r *plainRows) Next(dest []driver.Value) error {
 	dest[0] = int64(r.i)
 	r.i++
 	return nil
+}
+
+// openOnlyDriver implements driver.Driver and NOTHING else.
+//
+// This is the shape a real driver takes, and it is the shape neither
+// testDriver nor plainDriver has: both of those implement Connect, so both are
+// already driver.Connector and neither can reach the bridge's fallback.
+// Measured on modernc.org/sqlite v1.57.0: Connector=false,
+// DriverContext=false.
+type openOnlyDriver struct {
+	mu      sync.Mutex
+	opens   int
+	lastDSN string
+	openErr error
+}
+
+var _ driver.Driver = (*openOnlyDriver)(nil)
+
+func (d *openOnlyDriver) Open(name string) (driver.Conn, error) {
+	d.mu.Lock()
+	d.opens++
+	d.lastDSN = name
+	err := d.openErr
+	d.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return &plainConn{d: &plainDriver{}}, nil
+}
+
+func (d *openOnlyDriver) counts() (opens int, dsn string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.opens, d.lastDSN
+}
+
+// ctxDriver implements driver.DriverContext, so the bridge must use its
+// OpenConnector rather than the DSN fallback.
+type ctxDriver struct {
+	mu             sync.Mutex
+	openConnectors int
+	openConnErr    error
+}
+
+var (
+	_ driver.Driver        = (*ctxDriver)(nil)
+	_ driver.DriverContext = (*ctxDriver)(nil)
+)
+
+func (d *ctxDriver) Open(string) (driver.Conn, error) {
+	// Reaching this means the bridge took the fallback for a driver that
+	// offers OpenConnector, which is the defect the DriverContext test exists
+	// to catch.
+	return nil, errors.New("ctxDriver.Open was called, but this driver offers OpenConnector")
+}
+
+func (d *ctxDriver) OpenConnector(name string) (driver.Connector, error) {
+	d.mu.Lock()
+	d.openConnectors++
+	err := d.openConnErr
+	d.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return &plainDriver{}, nil
+}
+
+func (d *ctxDriver) connectors() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.openConnectors
 }
