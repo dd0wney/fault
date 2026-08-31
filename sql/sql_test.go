@@ -357,8 +357,8 @@ func TestAStatementsOperationsEachCount(t *testing.T) {
 					continue
 				}
 
-				_, execErr := st.Exec(nil)
-				_, queryErr := st.Query(nil)
+				_, execErr := st.Exec(nil)   //nolint:staticcheck // driver.Stmt requires Exec, so the wrapper is tested through it
+				_, queryErr := st.Query(nil) //nolint:staticcheck // driver.Stmt requires Query, so the wrapper is tested through it
 				closeErr := st.Close()
 				_ = c.Close()
 
@@ -401,7 +401,7 @@ func TestNumInputDoesNotCount(t *testing.T) {
 		for range 100 {
 			_ = st.NumInput() // must be none
 		}
-		_, execErr := st.Exec(nil) // 3
+		_, execErr := st.Exec(nil) //nolint:staticcheck // driver.Stmt requires Exec, so the wrapper is tested through it
 		_ = st.Close()
 		_ = c.Close()
 
@@ -531,21 +531,21 @@ func TestResetSessionIsForwardedAndDoesNotCount(t *testing.T) {
 func TestTheContextMethodsEachCount(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		call func(driver.Conn) error
+		call func(*testing.T, driver.Conn) error
 	}{
-		{"PrepareContext", func(c driver.Conn) error {
-			st, err := c.(driver.ConnPrepareContext).PrepareContext(context.Background(), "select 1")
+		{"PrepareContext", func(t *testing.T, c driver.Conn) error {
+			st, err := asPrepareContext(t, c).PrepareContext(context.Background(), "select 1")
 			if st != nil {
 				_ = st.Close()
 			}
 			return err
 		}},
-		{"BeginTx", func(c driver.Conn) error {
-			_, err := c.(driver.ConnBeginTx).BeginTx(context.Background(), driver.TxOptions{})
+		{"BeginTx", func(t *testing.T, c driver.Conn) error {
+			_, err := asBeginTx(t, c).BeginTx(context.Background(), driver.TxOptions{})
 			return err
 		}},
-		{"Ping", func(c driver.Conn) error {
-			return c.(driver.Pinger).Ping(context.Background())
+		{"Ping", func(t *testing.T, c driver.Conn) error {
+			return asPinger(t, c).Ping(context.Background())
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -556,7 +556,7 @@ func TestTheContextMethodsEachCount(t *testing.T) {
 				if err != nil {
 					continue
 				}
-				got := c.call(conn) // 2
+				got := c.call(t, conn) // 2
 				_ = conn.Close()
 
 				if n != 2 {
@@ -590,25 +590,25 @@ func TestTheFallbacksWorkWhenTheBaseOffersOnlyTheRequiredMethods(t *testing.T) {
 	}
 	defer func() { _ = c.Close() }()
 
-	st, err := c.(driver.ConnPrepareContext).PrepareContext(context.Background(), "select 1")
+	st, err := asPrepareContext(t, c).PrepareContext(context.Background(), "select 1")
 	if err != nil {
 		t.Errorf("PrepareContext against a base without it: %v", err)
 	} else {
 		_ = st.Close()
 	}
 
-	if _, err := c.(driver.ConnBeginTx).BeginTx(context.Background(), driver.TxOptions{}); err != nil {
+	if _, err := asBeginTx(t, c).BeginTx(context.Background(), driver.TxOptions{}); err != nil {
 		t.Errorf("BeginTx against a base without it: %v", err)
 	}
 
 	// A base that cannot be pinged reports success rather than an error. The
 	// wrapper must not invent a failure the driver beneath it never had.
-	if err := c.(driver.Pinger).Ping(context.Background()); err != nil {
+	if err := asPinger(t, c).Ping(context.Background()); err != nil {
 		t.Errorf("Ping against a base without a Pinger = %v, want nil", err)
 	}
 
 	// The same for the session reset: nothing to reset is not an error.
-	if err := c.(driver.SessionResetter).ResetSession(context.Background()); err != nil {
+	if err := asResetter(t, c).ResetSession(context.Background()); err != nil {
 		t.Errorf("ResetSession against a base without it = %v, want nil", err)
 	}
 }
@@ -626,30 +626,30 @@ func TestABaseFailurePassesThroughUnchanged(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		base driver.Connector
-		call func(driver.Conn) error
+		call func(*testing.T, driver.Conn) error
 	}{
-		{"Prepare", &testDriver{prepareErr: errBase}, func(c driver.Conn) error {
+		{"Prepare", &testDriver{prepareErr: errBase}, func(t *testing.T, c driver.Conn) error {
 			_, err := c.Prepare("select 1")
 			return err
 		}},
-		{"PrepareContext", &testDriver{prepareErr: errBase}, func(c driver.Conn) error {
-			_, err := c.(driver.ConnPrepareContext).PrepareContext(context.Background(), "select 1")
+		{"PrepareContext", &testDriver{prepareErr: errBase}, func(t *testing.T, c driver.Conn) error {
+			_, err := asPrepareContext(t, c).PrepareContext(context.Background(), "select 1")
 			return err
 		}},
-		{"Begin", &testDriver{beginErr: errBase}, func(c driver.Conn) error {
+		{"Begin", &testDriver{beginErr: errBase}, func(t *testing.T, c driver.Conn) error {
 			_, err := c.Begin() //nolint:staticcheck // driver.Conn requires Begin, so the wrapper is tested through it
 			return err
 		}},
-		{"BeginTx", &testDriver{beginErr: errBase}, func(c driver.Conn) error {
-			_, err := c.(driver.ConnBeginTx).BeginTx(context.Background(), driver.TxOptions{})
+		{"BeginTx", &testDriver{beginErr: errBase}, func(t *testing.T, c driver.Conn) error {
+			_, err := asBeginTx(t, c).BeginTx(context.Background(), driver.TxOptions{})
 			return err
 		}},
-		{"PrepareContext falling back", &plainDriver{prepareErr: errBase}, func(c driver.Conn) error {
-			_, err := c.(driver.ConnPrepareContext).PrepareContext(context.Background(), "select 1")
+		{"PrepareContext falling back", &plainDriver{prepareErr: errBase}, func(t *testing.T, c driver.Conn) error {
+			_, err := asPrepareContext(t, c).PrepareContext(context.Background(), "select 1")
 			return err
 		}},
-		{"BeginTx falling back", &plainDriver{beginErr: errBase}, func(c driver.Conn) error {
-			_, err := c.(driver.ConnBeginTx).BeginTx(context.Background(), driver.TxOptions{})
+		{"BeginTx falling back", &plainDriver{beginErr: errBase}, func(t *testing.T, c driver.Conn) error {
+			_, err := asBeginTx(t, c).BeginTx(context.Background(), driver.TxOptions{})
 			return err
 		}},
 	} {
@@ -661,7 +661,7 @@ func TestABaseFailurePassesThroughUnchanged(t *testing.T) {
 			}
 			defer func() { _ = conn.Close() }()
 
-			got := c.call(conn)
+			got := c.call(t, conn)
 			if !errors.Is(got, errBase) {
 				t.Errorf("%s = %v, want the base driver's own error unchanged", c.name, got)
 			}
@@ -670,4 +670,46 @@ func TestABaseFailurePassesThroughUnchanged(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The three helpers below exist because .golangci.yml sets
+// errcheck.check-type-assertions, so a one-value type assertion is a finding.
+// That strictness is right here rather than merely satisfied: the two-value
+// form turns "the wrapper does not implement this" from a panic into a
+// sentence, and that sentence is the finding fork 3 is about.
+
+func asPrepareContext(t *testing.T, c driver.Conn) driver.ConnPrepareContext {
+	t.Helper()
+	v, ok := c.(driver.ConnPrepareContext)
+	if !ok {
+		t.Fatal("the wrapper does not implement driver.ConnPrepareContext, so database/sql would drop the caller's context")
+	}
+	return v
+}
+
+func asBeginTx(t *testing.T, c driver.Conn) driver.ConnBeginTx {
+	t.Helper()
+	v, ok := c.(driver.ConnBeginTx)
+	if !ok {
+		t.Fatal("the wrapper does not implement driver.ConnBeginTx")
+	}
+	return v
+}
+
+func asPinger(t *testing.T, c driver.Conn) driver.Pinger {
+	t.Helper()
+	v, ok := c.(driver.Pinger)
+	if !ok {
+		t.Fatal("the wrapper does not implement driver.Pinger, so db.Ping would report success against a driver whose Ping fails")
+	}
+	return v
+}
+
+func asResetter(t *testing.T, c driver.Conn) driver.SessionResetter {
+	t.Helper()
+	v, ok := c.(driver.SessionResetter)
+	if !ok {
+		t.Fatal("the wrapper does not implement driver.SessionResetter, so database/sql would never reset the base driver's session")
+	}
+	return v
 }
