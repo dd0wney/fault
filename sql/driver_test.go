@@ -39,6 +39,10 @@ type testDriver struct {
 	prepareErr error
 	beginErr   error
 
+	// rows is how many rows a query returns. It exists so a test can prove
+	// the operation count does NOT follow it.
+	rows int
+
 	// connectErr, when set, is what the base returns instead of a connection.
 	// A base that cannot fail leaves the adapter's own error path untested,
 	// and the mutation gate reported exactly that: removing `return nil, err`
@@ -126,7 +130,21 @@ func (c *testConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.T
 }
 
 func (c *testConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	return &testRows{rows: [][]driver.Value{{int64(1)}, {int64(2)}}}, nil
+	return c.rowsOf(), nil
+}
+
+// rowsOf builds a result set of the driver's configured length, defaulting to
+// two rows so the tests written before `rows` existed keep their shape.
+func (c *testConn) rowsOf() *testRows {
+	n := c.d.rows
+	if n == 0 {
+		n = 2
+	}
+	out := make([][]driver.Value, n)
+	for i := range out {
+		out[i] = []driver.Value{int64(i)}
+	}
+	return &testRows{rows: out}
 }
 
 func (c *testConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {

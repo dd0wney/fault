@@ -25,6 +25,7 @@ import (
 	stdsql "database/sql"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/dd0wney/fault"
@@ -43,6 +44,11 @@ var ErrInjected = errors.New("fault/sql: injected failure")
 // crash.Recorder holds its refusals: the scenario is written to handle
 // database errors, and this is not one of those. It is this package saying it
 // cannot describe what happened.
+// errShortResultSet is held for the same reason errConcurrentConns is: the
+// pass consumed an operation index and injected nothing, so it asserted
+// nothing while reporting a pass.
+var errShortResultSet = errors.New("fault/sql: the armed row is past the end of the result set, so this pass consumed an operation index and injected nothing")
+
 var errConcurrentConns = errors.New("fault/sql: two connections were live at once, so the operation index does not identify one operation — set SetMaxOpenConns(1), or use github.com/dd0wney/fault/role")
 
 // Fault is a [driver.Connector] that fails one operation and counts the
@@ -58,6 +64,10 @@ type Fault struct {
 
 	p    *fault.Points
 	base driver.Connector
+	// row is the index within a result set at which a tripped Rows.Next
+	// delivers its failure. The index is consumed at the FIRST Next either
+	// way, so this moves only where the error appears, never the count.
+	row int
 }
 
 // New returns a Connector that fails one operation, chosen by p.
@@ -66,7 +76,24 @@ type Fault struct {
 // not fail reaches the real driver and the code under test takes the real
 // path.
 func New(p *fault.Points, base driver.Connector) *Fault {
-	return &Fault{p: p, base: base}
+	return NewAtRow(p, base, 0)
+}
+
+// NewAtRow is [New] with a tripped [driver.Rows].Next delivering its failure at
+// row, counting from 0, rather than at the first row.
+//
+// THE COUNT DOES NOT MOVE. Rows.Next consumes exactly one operation index per
+// result set, on its first call, whatever row is. That is what keeps the N-th
+// operation a property of the program's structure rather than of its data: if
+// the index were consumed at row itself, adding a row to a fixture table would
+// silently move every later armed point, which is the defect this whole
+// decision exists to avoid.
+//
+// If the result set ends before row, the pass consumed an index and injected
+// nothing. That is not a pass, and [Fault.Err] refuses it rather than letting
+// it read as one.
+func NewAtRow(p *fault.Points, base driver.Connector, row int) *Fault {
+	return &Fault{p: p, base: base, row: row}
 }
 
 // OpenDB returns a *sql.DB served by this connector, with SetMaxOpenConns(1)
@@ -309,6 +336,110 @@ func (c *conn) ResetSession(ctx context.Context) error {
 	return r.ResetSession(ctx)
 }
 
+// QueryContext is [driver.QueryerContext].
+//
+// This is the interface whose absence costs the most. sql.go:1777 falls back to
+// Prepare, then Query, then Close when a Conn implements neither
+// QueryerContext nor Queryer, so a wrapper without it turns ONE driver call
+// into THREE and moves every armed point after it.
+func (c *conn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	q, ok := c.base.(driver.QueryerContext)
+	if !ok {
+		// driver.ErrSkip is the documented way to say "continue as if
+		// unimplemented" (driver.go:150). Returning it sends database/sql down
+		// the prepare-then-query path it would have taken without this method,
+		// which is what the base driver's own shape calls for. No index is
+		// consumed, because no operation was performed.
+		return nil, driver.ErrSkip
+	}
+	if c.f.trip() {
+		return nil, ErrInjected
+	}
+	rs, err := q.QueryContext(ctx, query, args)
+	if err != nil {
+		return nil, err
+	}
+	return c.f.wrapRows(rs), nil
+}
+
+// ExecContext is [driver.ExecerContext]. sql.go:1705 has the same fallback.
+func (c *conn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	e, ok := c.base.(driver.ExecerContext)
+	if !ok {
+		return nil, driver.ErrSkip
+	}
+	if c.f.trip() {
+		return nil, ErrInjected
+	}
+	return e.ExecContext(ctx, query, args)
+}
+
+// wrapRows attaches the adapter's row rule to a result set.
+func (f *Fault) wrapRows(base driver.Rows) driver.Rows {
+	return &rows{f: f, base: base, at: f.row}
+}
+
+// rows is one result set.
+//
+// THE RULE, and it is the answer to the "what counts as one operation"
+// question the design document asks. Next consumes exactly ONE operation index
+// per result set, on its first call. It does not consume one per row.
+//
+// Per row was the obvious reading and it is wrong twice over. A 600-row query
+// would pass the core's maxOps of 512 and the sweep would report
+// non-termination, which reads exactly like a defect in the code under test
+// and is not one. And the count would then follow the DATA, so adding a row to
+// a fixture table would move every later armed point.
+type rows struct {
+	f    *Fault
+	base driver.Rows
+	at   int // the row index at which a tripped Next delivers its failure
+	n    int // rows delivered so far
+
+	counted bool // the one index for this result set has been consumed
+	armed   bool // that index tripped, and the failure is not yet delivered
+}
+
+// Columns does not count. It is a property of the result set, not an operation
+// on the database, in the same way NumInput is for a statement.
+func (r *rows) Columns() []string { return r.base.Columns() }
+
+func (r *rows) Next(dest []driver.Value) error {
+	if !r.counted {
+		r.counted = true
+		r.armed = r.f.trip()
+	}
+	if r.armed && r.n == r.at {
+		r.armed = false // delivered once, and once only
+		return ErrInjected
+	}
+	err := r.base.Next(dest)
+	if err == nil {
+		r.n++
+	}
+	return err
+}
+
+// Close counts, and closes the real result set whether or not it trips.
+//
+// It is also where a named row that the result set never reached is refused.
+// At this point r.armed can only still be true if the index was consumed and
+// the row never arrived, so the pass injected nothing at all.
+func (r *rows) Close() error {
+	if r.armed {
+		r.f.mu.Lock()
+		r.f.fail(fmt.Errorf("%w: armed row %d, and the result set held %d", errShortResultSet, r.at, r.n))
+		r.f.mu.Unlock()
+	}
+
+	tripped := r.f.trip()
+	err := r.base.Close()
+	if tripped {
+		return ErrInjected
+	}
+	return err
+}
+
 // stmt is one prepared statement, whose operations continue the same count.
 type stmt struct {
 	f    *Fault
@@ -345,7 +476,11 @@ func (s *stmt) Query(args []driver.Value) (driver.Rows, error) {
 		return nil, ErrInjected
 	}
 	// SA1019: the same as Exec above. driver.Stmt requires Query.
-	return s.base.Query(args) //nolint:staticcheck // driver.Stmt requires Query; a wrapper must forward it
+	rs, err := s.base.Query(args) //nolint:staticcheck // driver.Stmt requires Query; a wrapper must forward it
+	if err != nil {
+		return nil, err
+	}
+	return s.f.wrapRows(rs), nil
 }
 
 // tx is one transaction.

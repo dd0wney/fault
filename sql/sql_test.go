@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -165,10 +166,10 @@ func TestTwoLiveConnectionsAreRefused(t *testing.T) {
 // them. Writing them out means closing one is a visible edit here, and a NEW
 // divergence is distinguishable from the six already scheduled.
 func TestTheWrapperForwardsWhatTheBaseImplements(t *testing.T) {
-	known := map[string]bool{
-		"QueryerContext": true,
-		"ExecerContext":  true,
-	}
+	// Empty, and it stays empty. Every optional interface the test driver
+	// implements is now forwarded. A new entry here is a regression, not a
+	// schedule.
+	known := map[string]bool{}
 
 	optional := map[string]reflect.Type{
 		"ConnPrepareContext": reflect.TypeOf((*driver.ConnPrepareContext)(nil)).Elem(),
@@ -712,4 +713,201 @@ func asResetter(t *testing.T, c driver.Conn) driver.SessionResetter {
 		t.Fatal("the wrapper does not implement driver.SessionResetter, so database/sql would never reset the base driver's session")
 	}
 	return v
+}
+
+// THE ANSWER TO FORK 4, and the property everything else rests on.
+//
+// Next consumes exactly ONE operation index per result set, on its first call.
+// It does not consume one per row. Per row was the obvious reading and it is
+// wrong twice: a 600-row query would pass the core's maxOps of 512 and the
+// sweep would report non-termination, which reads exactly like a defect in the
+// code under test; and the count would follow the DATA, so adding a row to a
+// fixture would move every later armed point.
+//
+// THE ASSERTION IS ABOUT A LATER OPERATION, and it has to be. An earlier
+// version of this test armed the Next itself and checked that it failed, which
+// per-row counting satisfies just as well: with the failure delivered at row 0
+// the two rules are indistinguishable there. It passed against a deliberately
+// per-row implementation, so it asserted nothing about the property it named.
+//
+// The difference only shows up AFTER the drain. The scenario is five
+// operations regardless of how many rows arrive:
+//
+//	1 connect   2 query   3 the whole drain   4 rows.Close   5 conn.Close
+//
+// Under per-row counting a ten-row result set would put conn.Close at 13.
+func TestNextCountsOncePerResultSetAndNotOncePerRow(t *testing.T) {
+	for _, rowCount := range []int{2, 10} {
+		t.Run(fmt.Sprintf("%drows", rowCount), func(t *testing.T) {
+			reached := false
+			for n, p := range fault.Sweep(t) {
+				f := faultsql.New(p, &testDriver{rows: rowCount})
+				c, err := f.Connect(context.Background()) // 1
+				if err != nil {
+					continue
+				}
+				q, ok := c.(driver.QueryerContext)
+				if !ok {
+					t.Fatal("the wrapper does not implement driver.QueryerContext")
+				}
+				rs, err := q.QueryContext(context.Background(), "select n", nil) // 2
+				if err != nil {
+					_ = c.Close()
+					continue
+				}
+				for { // 3, once for the whole drain
+					if e := rs.Next(make([]driver.Value, 1)); e != nil {
+						break
+					}
+				}
+				_ = rs.Close()        // 4
+				closeErr := c.Close() // 5
+
+				if n != 5 {
+					continue
+				}
+				reached = true
+				if !errors.Is(closeErr, faultsql.ErrInjected) {
+					t.Errorf("conn.Close() = %v with operation 5 armed and %d rows, want the injected error — the drain consumed more than one index, so the count follows the data", closeErr, rowCount)
+				}
+			}
+			if !reached {
+				t.Fatalf("the sweep never armed operation 5 with %d rows, so nothing was asserted — under per-row counting it would not reach it", rowCount)
+			}
+		})
+	}
+}
+
+// Columns is a property of the result set, not an operation, in the same way
+// NumInput is for a statement.
+func TestColumnsDoesNotCount(t *testing.T) {
+	reached := false
+	for n, p := range fault.Sweep(t) {
+		f := faultsql.New(p, &testDriver{rows: 3})
+		c, err := f.Connect(context.Background()) // 1
+		if err != nil {
+			continue
+		}
+		q, ok := c.(driver.QueryerContext)
+		if !ok {
+			t.Fatal("the wrapper does not implement driver.QueryerContext")
+		}
+		rs, err := q.QueryContext(context.Background(), "select n", nil) // 2
+		if err != nil {
+			_ = c.Close()
+			continue
+		}
+		for range 100 {
+			_ = rs.Columns() // must be none
+		}
+		nextErr := rs.Next(make([]driver.Value, 1)) // 3
+		_ = rs.Close()
+		_ = c.Close()
+
+		if n != 3 {
+			continue
+		}
+		reached = true
+		if !errors.Is(nextErr, faultsql.ErrInjected) {
+			t.Errorf("Next() = %v with operation 3 armed, want the injected error — a hundred Columns calls moved the index", nextErr)
+		}
+	}
+	if !reached {
+		t.Fatal("the sweep never armed operation 3, so nothing was asserted")
+	}
+}
+
+// NewAtRow moves WHERE the failure appears, and never the count.
+func TestNewAtRowDeliversAtTheNamedRow(t *testing.T) {
+	reached := false
+	for n, p := range fault.Sweep(t) {
+		f := faultsql.NewAtRow(p, &testDriver{rows: 5}, 3)
+		c, err := f.Connect(context.Background()) // 1
+		if err != nil {
+			continue
+		}
+		q, ok := c.(driver.QueryerContext)
+		if !ok {
+			t.Fatal("the wrapper does not implement driver.QueryerContext")
+		}
+		rs, err := q.QueryContext(context.Background(), "select n", nil) // 2
+		if err != nil {
+			_ = c.Close()
+			continue
+		}
+
+		delivered, seen := -1, 0
+		for {
+			e := rs.Next(make([]driver.Value, 1)) // 3, once for the whole drain
+			if errors.Is(e, faultsql.ErrInjected) {
+				delivered = seen
+				break
+			}
+			if e != nil {
+				break
+			}
+			seen++
+		}
+		_ = rs.Close()
+		_ = c.Close()
+
+		if n != 3 {
+			continue
+		}
+		reached = true
+		if delivered != 3 {
+			t.Errorf("the failure arrived after %d rows, want 3 — NewAtRow names where it appears", delivered)
+		}
+		if err := f.Err(); err != nil {
+			t.Errorf("a result set long enough for the named row was refused: %v", err)
+		}
+	}
+	if !reached {
+		t.Fatal("the sweep never armed operation 3, so nothing was asserted")
+	}
+}
+
+// A named row past the end of the result set consumed an operation index and
+// injected nothing. That is not a pass, and Err refuses it rather than letting
+// it read as one.
+//
+// This is the case that made the design document's original wording wrong. It
+// said "one trip per result set, at a row the caller names", and named a row
+// the data might never reach.
+func TestANamedRowPastTheEndIsRefused(t *testing.T) {
+	reached := false
+	for n, p := range fault.Sweep(t) {
+		f := faultsql.NewAtRow(p, &testDriver{rows: 2}, 400)
+		c, err := f.Connect(context.Background()) // 1
+		if err != nil {
+			continue
+		}
+		q, ok := c.(driver.QueryerContext)
+		if !ok {
+			t.Fatal("the wrapper does not implement driver.QueryerContext")
+		}
+		rs, err := q.QueryContext(context.Background(), "select n", nil) // 2
+		if err != nil {
+			_ = c.Close()
+			continue
+		}
+		for {
+			if e := rs.Next(make([]driver.Value, 1)); e != nil { // 3
+				break
+			}
+		}
+		_ = rs.Close()
+		_ = c.Close()
+
+		if n != 3 {
+			continue
+		}
+		reached = true
+		if f.Err() == nil {
+			t.Error("the pass consumed an operation index and injected nothing, and it was not refused — a sweep that asserts nothing must never report a pass")
+		}
+	}
+	if !reached {
+		t.Fatal("the sweep never armed operation 3, so nothing was asserted")
+	}
 }
