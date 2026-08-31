@@ -276,9 +276,7 @@ func (f *faultFile) errUnsupported(op string) error {
 
 // Seek moves the read and write position, when the base can.
 //
-// TODO(§12): the body.
-//
-// The shape, and the three decisions it carries:
+// The three decisions the body carries:
 //
 //  1. Ask the base for the capability FIRST, before Trip. A base that cannot
 //     seek must refuse identically whether or not this pass armed the point,
@@ -311,9 +309,7 @@ func (f *faultFile) Seek(offset int64, whence int) (int64, error) {
 // WriteAt writes at an absolute offset, when the base can, without moving the
 // file position.
 //
-// TODO(§12): the body.
-//
-// The shape, and the four decisions it carries:
+// The four decisions the body carries:
 //
 //  1. Capability first, as in Seek.
 //  2. Trip. On false, delegate unchanged.
