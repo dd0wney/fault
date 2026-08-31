@@ -1579,3 +1579,201 @@ func queryRowsErr(c driver.Conn) (driver.Rows, error) {
 	}
 	return q.QueryContext(context.Background(), "select n", nil)
 }
+
+// All FIVE column-type methods forward, not the two the first version checked.
+//
+// The mutation gate found the other three: replacing the body of
+// ColumnTypeNullable, ColumnTypeLength or ColumnTypePrecisionScale with a
+// discard changed no test result, because nothing read what they returned.
+func TestEveryColumnTypeMethodForwardsItsValue(t *testing.T) {
+	f := faultsql.New(&fault.Points{}, &testDriver{rows: 2})
+	c, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	rs := queryRows(t, c)
+	defer func() { _ = rs.Close() }()
+
+	if v, ok := rs.(driver.RowsColumnTypeNullable); !ok {
+		t.Error("no driver.RowsColumnTypeNullable on the wrapped rows")
+	} else if nullable, known := v.ColumnTypeNullable(0); nullable || !known {
+		t.Errorf("ColumnTypeNullable(0) = (%v, %v), want (false, true) — the base says so", nullable, known)
+	}
+	if v, ok := rs.(driver.RowsColumnTypeLength); !ok {
+		t.Error("no driver.RowsColumnTypeLength on the wrapped rows")
+	} else if length, known := v.ColumnTypeLength(0); length != 42 || !known {
+		t.Errorf("ColumnTypeLength(0) = (%d, %v), want (42, true) — the base says so, and 42 is chosen because it is NOT what the fallback returns", length, known)
+	}
+	if v, ok := rs.(driver.RowsColumnTypePrecisionScale); !ok {
+		t.Error("no driver.RowsColumnTypePrecisionScale on the wrapped rows")
+	} else if pr, sc, known := v.ColumnTypePrecisionScale(0); pr != 10 || sc != 2 || !known {
+		t.Errorf("ColumnTypePrecisionScale(0) = (%d, %d, %v), want (10, 2, true) — distinct from the fallback's (0, 0, false)", pr, sc, known)
+	}
+}
+
+// The zero values a plain base gets are ZERO, and the number matters as much
+// as the boolean.
+//
+// The mutation gate found this by turning `return 0, false` into
+// `return -1, false` and `return 1, false` with no test noticing. A caller
+// that reads the length before checking ok gets a number either way, and -1 is
+// a different lie from 0.
+func TestThePlainBaseZeroValuesAreZero(t *testing.T) {
+	f := faultsql.New(&fault.Points{}, &plainDriver{})
+	c, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	st, err := c.Prepare("select n")
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	rs, err := st.Query(nil) //nolint:staticcheck // driver.Stmt requires Query, so the wrapper is tested through it
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer func() { _ = rs.Close() }()
+
+	if v, ok := rs.(driver.RowsColumnTypeLength); !ok {
+		t.Error("no driver.RowsColumnTypeLength on the wrapped rows")
+	} else if length, known := v.ColumnTypeLength(0); length != 0 || known {
+		t.Errorf("ColumnTypeLength against a plain base = (%d, %v), want (0, false)", length, known)
+	}
+	if v, ok := rs.(driver.RowsColumnTypePrecisionScale); !ok {
+		t.Error("no driver.RowsColumnTypePrecisionScale on the wrapped rows")
+	} else if pr, sc, known := v.ColumnTypePrecisionScale(0); pr != 0 || sc != 0 || known {
+		t.Errorf("ColumnTypePrecisionScale against a plain base = (%d, %d, %v), want (0, 0, false)", pr, sc, known)
+	}
+}
+
+// A base failure from the statement's QueryContext, and from NextResultSet,
+// passes through unchanged.
+func TestABaseFailureFromTheNewMethodsPassesThrough(t *testing.T) {
+	t.Run("StmtQueryContext", func(t *testing.T) {
+		f := faultsql.New(&fault.Points{}, &testDriver{stmtQueryErr: errBase})
+		c, err := f.Connect(context.Background())
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		defer func() { _ = c.Close() }()
+
+		st, err := c.Prepare("select n")
+		if err != nil {
+			t.Fatalf("prepare: %v", err)
+		}
+		defer func() { _ = st.Close() }()
+
+		q, ok := st.(driver.StmtQueryContext)
+		if !ok {
+			t.Fatal("no driver.StmtQueryContext on the wrapped statement")
+		}
+		if _, err := q.QueryContext(context.Background(), nil); !errors.Is(err, errBase) {
+			t.Errorf("QueryContext = %v, want the base driver's own error unchanged", err)
+		}
+	})
+
+	t.Run("NextResultSet", func(t *testing.T) {
+		f := faultsql.New(&fault.Points{}, &testDriver{rows: 2, nextSetErr: errBase})
+		c, err := f.Connect(context.Background())
+		if err != nil {
+			t.Fatalf("connect: %v", err)
+		}
+		defer func() { _ = c.Close() }()
+
+		rs := queryRows(t, c)
+		defer func() { _ = rs.Close() }()
+
+		nrs, ok := rs.(driver.RowsNextResultSet)
+		if !ok {
+			t.Fatal("no driver.RowsNextResultSet on the wrapped rows")
+		}
+		if err := nrs.NextResultSet(); !errors.Is(err, errBase) {
+			t.Errorf("NextResultSet = %v, want the base driver's own error unchanged", err)
+		}
+	})
+}
+
+// THE SECOND RESULT SET GETS ITS OWN ROW BUDGET, counted from zero.
+//
+// This is the assertion the reset line needs, and it is only observable when
+// something is armed: r.n decides WHERE the failure lands, and with nothing
+// armed nothing lands anywhere. The mutation gate found three mutants here —
+// the reset to -1, the reset to 1, and the reset removed entirely — and none
+// of them changed a test result.
+//
+// The scenario, with the row named as 1 so the position is not row 0 by
+// default:
+//
+//	1 connect  2 query  3 the first set's drain  4 NextResultSet  5 the
+//	second set's first Next
+//
+// With operation 5 armed, the failure must arrive after exactly ONE row of the
+// SECOND set. If the counter were not reset it would still hold 2 from the
+// first set, never reach 1, and the pass would consume an index and inject
+// nothing — which Fault.Err refuses, so that case is caught too.
+func TestTheSecondResultSetCountsItsRowsFromZero(t *testing.T) {
+	reached := false
+	for n, p := range fault.Sweep(t) {
+		f := faultsql.NewAtRow(p, &testDriver{rows: 2, moreRows: 4}, 1)
+		c, err := f.Connect(context.Background()) // 1
+		if err != nil {
+			continue
+		}
+		rs, err := queryRowsErr(c) // 2
+		if err != nil {
+			_ = c.Close()
+			continue
+		}
+		for { // 3
+			if e := rs.Next(make([]driver.Value, 1)); e != nil {
+				break
+			}
+		}
+		nrs, ok := rs.(driver.RowsNextResultSet)
+		if !ok {
+			t.Fatal("no driver.RowsNextResultSet on the wrapped rows")
+		}
+		advanced := nrs.NextResultSet() // 4
+
+		delivered, seen := -1, 0
+		if advanced == nil {
+			for { // 5, once for the whole second drain
+				e := rs.Next(make([]driver.Value, 1))
+				if errors.Is(e, faultsql.ErrInjected) {
+					delivered = seen
+					break
+				}
+				if e != nil {
+					break
+				}
+				seen++
+			}
+		}
+		refusal := f.Err()
+		_ = rs.Close()
+		_ = c.Close()
+
+		if n != 5 {
+			continue
+		}
+		reached = true
+		if advanced != nil {
+			t.Fatalf("NextResultSet did not advance: %v", advanced)
+		}
+		if delivered != 1 {
+			t.Errorf("the failure arrived after %d row(s) of the second set, want 1 — the row counter was not reset to zero", delivered)
+		}
+		if refusal != nil {
+			t.Errorf("the pass was refused: %v — the armed row was never reached in the second set", refusal)
+		}
+	}
+	if !reached {
+		t.Fatal("the sweep never armed operation 5, so nothing was asserted")
+	}
+}
