@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"io"
+	"reflect"
 	"sync"
 )
 
@@ -186,6 +187,23 @@ func (c *testConn) ResetSession(ctx context.Context) error {
 
 type testStmt struct{ queryErr error }
 
+var (
+	_ driver.Stmt             = (*testStmt)(nil)
+	_ driver.StmtExecContext  = (*testStmt)(nil)
+	_ driver.StmtQueryContext = (*testStmt)(nil)
+)
+
+func (s *testStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	return testResult{}, nil
+}
+
+func (s *testStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	if s.queryErr != nil {
+		return nil, s.queryErr
+	}
+	return &testRows{rows: [][]driver.Value{{int64(1)}, {int64(2)}}}, nil
+}
+
 func (s *testStmt) Close() error  { return nil }
 func (s *testStmt) NumInput() int { return 0 }
 func (s *testStmt) Exec(args []driver.Value) (driver.Result, error) {
@@ -218,6 +236,24 @@ func (r *testRows) Next(dest []driver.Value) error {
 	r.n++
 	return nil
 }
+
+var (
+	_ driver.Rows                           = (*testRows)(nil)
+	_ driver.RowsColumnTypeScanType         = (*testRows)(nil)
+	_ driver.RowsColumnTypeDatabaseTypeName = (*testRows)(nil)
+	_ driver.RowsColumnTypeNullable         = (*testRows)(nil)
+	_ driver.RowsColumnTypeLength           = (*testRows)(nil)
+	_ driver.RowsColumnTypePrecisionScale   = (*testRows)(nil)
+	_ driver.RowsNextResultSet              = (*testRows)(nil)
+)
+
+func (r *testRows) ColumnTypeScanType(int) reflect.Type               { return reflect.TypeOf(int64(0)) }
+func (r *testRows) ColumnTypeDatabaseTypeName(int) string             { return "BIGINT" }
+func (r *testRows) ColumnTypeNullable(int) (bool, bool)               { return false, true }
+func (r *testRows) ColumnTypeLength(int) (int64, bool)                { return 0, false }
+func (r *testRows) ColumnTypePrecisionScale(int) (int64, int64, bool) { return 0, 0, false }
+func (r *testRows) HasNextResultSet() bool                            { return false }
+func (r *testRows) NextResultSet() error                              { return io.EOF }
 
 type testTx struct{}
 

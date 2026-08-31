@@ -152,26 +152,125 @@ func TestTwoLiveConnectionsAreRefused(t *testing.T) {
 
 // THE DECISION OF FORK 3, and the part of it that must not be skipped.
 //
-// database/sql type-asserts for optional interfaces at run time. sql.go:1777
-// falls back to Prepare, then Query, then Close when a Conn implements neither
-// QueryerContext nor Queryer, so a wrapper implementing fewer interfaces than
-// the driver beneath it turns ONE driver call into THREE and moves every armed
-// point after it.
+// database/sql type-asserts for optional interfaces at run time and changes its
+// own path on the answer. A wrapper implementing fewer than the driver beneath
+// it changes the program under test, and everything still compiles.
 //
-// This reflects over both and fails on a difference. It is the direct lesson of
-// PR #2: a method set tracked by hand in two places drifts, and the drift is
-// invisible because everything still compiles.
+// THIS TEST COVERED ONE OF THREE LEVELS UNTIL 2026-08-31. Every interface it
+// named belonged to driver.Conn. The wrapper's stmt and rows types implemented
+// only their required methods, and nothing looked. The commit that closed the
+// Conn level said "fork 3 is closed", which was true of what this test read and
+// not of the package.
 //
-// It records the KNOWN gaps rather than reporting a clean pass. Task 9 closes
-// them. Writing them out means closing one is a visible edit here, and a NEW
-// divergence is distinguishable from the six already scheduled.
+// The three levels and what each costs:
+//
+//	Conn   sql.go:1777 falls back to Prepare, then Query, then Close when a
+//	       Conn implements neither QueryerContext nor Queryer. ONE driver call
+//	       becomes THREE, and every armed point after it moves.
+//	Stmt   ctxutil.go:81 calls si.Query(dargs) when a Stmt has no
+//	       StmtQueryContext. The call count does not change and THE CONTEXT IS
+//	       DROPPED, so a caller's cancellation stops working once wrapped.
+//	Rows   sql.go:3307 and :3312 type-assert for RowsColumnTypeScanType and
+//	       RowsColumnTypeDatabaseTypeName. A wrapper without them makes
+//	       Rows.ColumnTypes() return less than the unwrapped driver does.
+//
+// The Conn level is the only one that moves the operation count. The other two
+// degrade the driver silently, which is worse to find and no less real.
 func TestTheWrapperForwardsWhatTheBaseImplements(t *testing.T) {
-	// Empty, and it stays empty. Every optional interface the test driver
-	// implements is now forwarded. A new entry here is a regression, not a
-	// schedule.
-	known := map[string]bool{}
+	base := &testDriver{}
+	f := faultsql.New(&fault.Points{}, base)
 
-	optional := map[string]reflect.Type{
+	wrappedConn, err := f.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer func() { _ = wrappedConn.Close() }()
+
+	bareConn, err := base.Connect(context.Background())
+	if err != nil {
+		t.Fatalf("base connect: %v", err)
+	}
+	defer func() { _ = bareConn.Close() }()
+
+	t.Run("Conn", func(t *testing.T) {
+		compareInterfaces(t, wrappedConn, bareConn, connInterfaces(), map[string]bool{})
+	})
+
+	t.Run("Stmt", func(t *testing.T) {
+		wrapped, err := wrappedConn.Prepare("select n")
+		if err != nil {
+			t.Fatalf("wrapped prepare: %v", err)
+		}
+		defer func() { _ = wrapped.Close() }()
+		bare, err := bareConn.Prepare("select n")
+		if err != nil {
+			t.Fatalf("bare prepare: %v", err)
+		}
+		defer func() { _ = bare.Close() }()
+
+		compareInterfaces(t, wrapped, bare, stmtInterfaces(), map[string]bool{})
+	})
+
+	t.Run("Rows", func(t *testing.T) {
+		wrapped := queryRows(t, wrappedConn)
+		defer func() { _ = wrapped.Close() }()
+		bare := queryRows(t, bareConn)
+		defer func() { _ = bare.Close() }()
+
+		compareInterfaces(t, wrapped, bare, rowsInterfaces(), map[string]bool{})
+	})
+}
+
+func queryRows(t *testing.T, c driver.Conn) driver.Rows {
+	t.Helper()
+	q, ok := c.(driver.QueryerContext)
+	if !ok {
+		t.Fatal("no driver.QueryerContext, so the rows level cannot be reached")
+	}
+	rs, err := q.QueryContext(context.Background(), "select n", nil)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	return rs
+}
+
+// compareInterfaces fails on any difference between what the base implements
+// and what the wrapper does.
+//
+// known lists the differences that are scheduled rather than accidental. An
+// entry that the wrapper has since implemented is itself an error, so a closed
+// gap cannot sit in the list pretending to be open.
+func compareInterfaces(t *testing.T, wrapped, bare any, optional map[string]reflect.Type, known map[string]bool) {
+	t.Helper()
+	wt, bt := reflect.TypeOf(wrapped), reflect.TypeOf(bare)
+
+	// The positive control. If the base implemented none of these, every
+	// assertion below would pass while proving nothing at all.
+	implementedByBase := 0
+	for _, iface := range optional {
+		if bt.Implements(iface) {
+			implementedByBase++
+		}
+	}
+	if implementedByBase == 0 {
+		t.Fatalf("%T implements none of the %d optional interfaces, so this check cannot detect a wrapper that forwards none", bare, len(optional))
+	}
+
+	for name, iface := range optional {
+		baseHas, wrapperHas := bt.Implements(iface), wt.Implements(iface)
+		switch {
+		case baseHas && !wrapperHas && !known[name]:
+			t.Errorf("the base implements driver.%s and %T does not, so database/sql takes a different path through the wrapper", name, wrapped)
+		case !baseHas && wrapperHas:
+			t.Errorf("%T implements driver.%s and the base does not, so it answers for a capability that is not there", wrapped, name)
+		case baseHas && wrapperHas && known[name]:
+			t.Errorf("driver.%s is listed as a known gap and %T now implements it — remove it from `known`", name, wrapped)
+		}
+	}
+}
+
+func connInterfaces() map[string]reflect.Type {
+	return map[string]reflect.Type{
 		"ConnPrepareContext": reflect.TypeOf((*driver.ConnPrepareContext)(nil)).Elem(),
 		"ConnBeginTx":        reflect.TypeOf((*driver.ConnBeginTx)(nil)).Elem(),
 		"QueryerContext":     reflect.TypeOf((*driver.QueryerContext)(nil)).Elem(),
@@ -183,46 +282,34 @@ func TestTheWrapperForwardsWhatTheBaseImplements(t *testing.T) {
 		"Validator":          reflect.TypeOf((*driver.Validator)(nil)).Elem(),
 		"NamedValueChecker":  reflect.TypeOf((*driver.NamedValueChecker)(nil)).Elem(),
 	}
+}
 
-	base := &testDriver{}
-	f := faultsql.New(&fault.Points{}, base)
-
-	wrapped, err := f.Connect(context.Background())
-	if err != nil {
-		t.Fatalf("connect: %v", err)
+func stmtInterfaces() map[string]reflect.Type {
+	return map[string]reflect.Type{
+		"StmtExecContext":   reflect.TypeOf((*driver.StmtExecContext)(nil)).Elem(),
+		"StmtQueryContext":  reflect.TypeOf((*driver.StmtQueryContext)(nil)).Elem(),
+		"NamedValueChecker": reflect.TypeOf((*driver.NamedValueChecker)(nil)).Elem(),
+		"ColumnConverter":   reflect.TypeOf((*driver.ColumnConverter)(nil)).Elem(), //nolint:staticcheck // deprecated, and database/sql still type-asserts for it
 	}
-	defer func() { _ = wrapped.Close() }()
+}
 
-	bare, err := base.Connect(context.Background())
-	if err != nil {
-		t.Fatalf("base connect: %v", err)
-	}
-	defer func() { _ = bare.Close() }()
-
-	wt, bt := reflect.TypeOf(wrapped), reflect.TypeOf(bare)
-
-	// The positive control. If the test driver implemented none of these, every
-	// assertion below would pass while proving nothing at all.
-	implementedByBase := 0
-	for _, iface := range optional {
-		if bt.Implements(iface) {
-			implementedByBase++
-		}
-	}
-	if implementedByBase < 6 {
-		t.Fatalf("the test driver implements only %d optional interfaces, so this test cannot detect a wrapper that forwards none", implementedByBase)
-	}
-
-	for name, iface := range optional {
-		baseHas, wrapperHas := bt.Implements(iface), wt.Implements(iface)
-		switch {
-		case baseHas && !wrapperHas && !known[name]:
-			t.Errorf("the base implements driver.%s and the wrapper does not, so database/sql takes a different path through the wrapper and every armed point after it moves", name)
-		case !baseHas && wrapperHas:
-			t.Errorf("the wrapper implements driver.%s and the base does not, so it answers for a capability that is not there", name)
-		case baseHas && wrapperHas && known[name]:
-			t.Errorf("driver.%s is listed as a known gap and the wrapper now implements it — remove it from `known`", name)
-		}
+func rowsInterfaces() map[string]reflect.Type {
+	return map[string]reflect.Type{
+		"RowsColumnTypeScanType":         reflect.TypeOf((*driver.RowsColumnTypeScanType)(nil)).Elem(),
+		"RowsColumnTypeDatabaseTypeName": reflect.TypeOf((*driver.RowsColumnTypeDatabaseTypeName)(nil)).Elem(),
+		"RowsColumnTypeNullable":         reflect.TypeOf((*driver.RowsColumnTypeNullable)(nil)).Elem(),
+		"RowsColumnTypeLength":           reflect.TypeOf((*driver.RowsColumnTypeLength)(nil)).Elem(),
+		"RowsColumnTypePrecisionScale":   reflect.TypeOf((*driver.RowsColumnTypePrecisionScale)(nil)).Elem(),
+		"RowsNextResultSet":              reflect.TypeOf((*driver.RowsNextResultSet)(nil)).Elem(),
+		// driver.RowsColumnScanner is deliberately absent. It requires go1.27
+		// and this module's floor is go1.23, so naming it here breaks the 1.23
+		// leg of CI. The compiler said so, which is the only reason this is
+		// known: nothing in the interface's own documentation announces a
+		// minimum version.
+		//
+		// It is the one optional rows interface this check cannot guard, and
+		// that gap is stated rather than left to be discovered. Add it when the
+		// floor moves.
 	}
 }
 
