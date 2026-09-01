@@ -291,3 +291,118 @@ func TestCheckCompleteRefusesWhenItExaminesNothing(t *testing.T) {
 			"undeclared, and instead reported %v", err)
 	}
 }
+
+// A block that appears more than once counts once.
+//
+// MEASURED 2026-09-01 against the fault repository itself. `go test -coverpkg=./...`
+// over seven packages writes 5117 profile lines for 731 DISTINCT blocks: each
+// test binary emits a record for every instrumented block, covered or not.
+// measure summed them, so both the numerator and the denominator grew sevenfold
+// and the reported figure fell from 98.6% to 20.7% while nothing about the code
+// or the tests had changed.
+//
+// That matters because -coverpkg is not exotic. It is the flag a caller NEEDS
+// when a coupling site sits in a package whose statements are executed only
+// from another package's tests. Without it that site reports 0/N and the tool
+// exits 1; with it the tool reported a number that meant nothing. Both readings
+// are wrong and they are wrong in opposite directions.
+//
+// The rule is the one Go's own cover tooling uses: a block is identified by its
+// exact span, it counts once toward the total, and it is covered when ANY
+// record for it has a non-zero count.
+func TestMeasureCountsARepeatedBlockOnce(t *testing.T) {
+	sites := mustResolve(t)
+	f, err := os.Open("testdata/profile-duplicate-blocks.out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	got, err := measure(f, sites)
+	if err != nil {
+		t.Fatalf("measure: %v", err)
+	}
+
+	// Compared against profile-mixed.out rather than against a number typed
+	// here. The duplicate fixture holds exactly the blocks of that one, three
+	// times each, so the two must give the identical answer -- and an expected
+	// value written by hand is a second thing that can be wrong. The first
+	// draft of this test asserted 0/3 for C2 because the profile names three
+	// blocks in that region; the answer is 0/2, because one of the three
+	// starts on the doc-comment line and falls outside the resolved range.
+	m, err := os.Open("testdata/profile-mixed.out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = m.Close() }()
+	want, err := measure(m, mustResolve(t))
+	if err != nil {
+		t.Fatalf("measure the reference profile: %v", err)
+	}
+
+	for i := range want {
+		if got[i].Covered != want[i].Covered || got[i].Total != want[i].Total {
+			t.Errorf("%s: %d/%d from the duplicated profile, %d/%d from the reference. "+
+				"A block repeated three times must count once.",
+				want[i].ID, got[i].Covered, got[i].Total, want[i].Covered, want[i].Total)
+		}
+	}
+
+	// The positive control. If the reference itself measured nothing, the loop
+	// above would compare zero against zero and report a pass.
+	if want[0].Total == 0 {
+		t.Fatal("the reference profile matched no statement, so this compared nothing")
+	}
+}
+
+// Covered by ANY record, not by the last one and not by all of them.
+//
+// This is the half that -coverpkg makes load-bearing. Package A's test binary
+// reports 0 for a block that package B's test binary reports 1 for, and the
+// block WAS executed. A rule that took the last record would report whichever
+// binary the profile happened to end with.
+func TestMeasureTreatsABlockCoveredByAnyRecordAsCovered(t *testing.T) {
+	const profile = `mode: set
+fixture/store.go:8.30,9.18 1 0
+fixture/store.go:9.18,11.3 1 0
+fixture/store.go:11.8,13.3 1 0
+fixture/store.go:13.2,14.11 1 0
+fixture/store.go:8.30,9.18 1 1
+fixture/store.go:9.18,11.3 1 1
+fixture/store.go:11.8,13.3 1 1
+fixture/store.go:13.2,14.11 1 1
+fixture/store.go:8.30,9.18 1 0
+fixture/store.go:9.18,11.3 1 0
+fixture/store.go:11.8,13.3 1 0
+fixture/store.go:13.2,14.11 1 0
+fixture/store.go:18.38,19.20 1 0
+fixture/store.go:19.20,21.3 1 0
+fixture/store.go:21.2,22.11 1 0
+`
+	sites := mustResolve(t)
+	got, err := measure(strings.NewReader(profile), sites)
+	if err != nil {
+		t.Fatalf("measure: %v", err)
+	}
+	if got[0].Covered != 4 || got[0].Total != 4 {
+		t.Errorf("C1: %d/%d, want 4/4 — the middle record covered every block, and a zero "+
+			"either side of it must not erase that", got[0].Covered, got[0].Total)
+	}
+}
+
+// A profile that disagrees with itself about a block's statement count is
+// malformed, and this refuses rather than picking one.
+//
+// Go emits the same count for every record of a block, so a disagreement means
+// the profile was assembled from builds of different source. Summing or
+// choosing would produce a number about no tree that ever existed.
+func TestMeasureRefusesABlockWhoseStatementCountDisagrees(t *testing.T) {
+	const profile = `mode: set
+fixture/store.go:8.30,9.18 1 1
+fixture/store.go:8.30,9.18 2 1
+`
+	sites := mustResolve(t)
+	if _, err := measure(strings.NewReader(profile), sites); err == nil {
+		t.Error("measure accepted a block with two different statement counts, want a refusal")
+	}
+}

@@ -54,9 +54,13 @@ import (
 // Coupling is one row of the registry: an interface a human declared, or a
 // package a human declared has none.
 type Coupling struct {
-	ID      string // stable identifier, referenced by the architecture document
-	Kind    string // "data" or "control"
-	Package string // import path relative to the module root
+	ID   string // stable identifier, referenced by the architecture document
+	Kind string // "data" or "control"
+	// Package is the FULL import path, not a path relative to the module root.
+	// checkComplete compares it against module+"/"+dir and refuses a row that
+	// does not match, which is the first thing an external caller gets wrong:
+	// resolve would accept the relative form, and completeness will not.
+	Package string
 	Symbol  string // function or method name
 	Lines   string // optional "start-end", to narrow the site within the symbol
 	Note    string // what the coupling is, in one line
