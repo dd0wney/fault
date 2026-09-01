@@ -357,11 +357,26 @@ func TestInjectedAndRealErrorsAnswerEveryPredicateTheSame(t *testing.T) {
 // resembles was found in this same method on the same day.
 func TestTheCapabilityRefusalNamesTheCapability(t *testing.T) {
 	dir := t.TempDir()
-	base := plainFS{faultfs.OS()}
-	f, err := faultfs.New(&fault.Points{}, base).OpenFile(filepath.Join(dir, "f"), os.O_RDWR|os.O_CREATE, 0o600)
+	fsys := faultfs.New(&fault.Points{}, plainFS{faultfs.OS()})
+	f, err := fsys.OpenFile(filepath.Join(dir, "f"), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}
+	defer func() { _ = f.Close() }()
+
+	// The wrapper counts what it hands out, so this test can use the leak
+	// detector this package ships.
+	//
+	// The first version held the handle open and only WINDOWS objected:
+	// TempDir cleanup cannot unlink a file another process still has open,
+	// while Linux and macOS remove it without a word. Outstanding makes the
+	// same defect portable, and e31c87f records the identical leak found the
+	// identical way -- by CI, on the one platform that notices.
+	t.Cleanup(func() {
+		if n := fsys.Outstanding(); n != 0 {
+			t.Errorf("%d handle(s) still open at the end of this test: %v", n, fsys.OpenPaths())
+		}
+	})
 
 	w, ok := writeAtOf(f)
 	if !ok {
