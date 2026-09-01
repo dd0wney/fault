@@ -80,7 +80,7 @@ few of them.
 | `fault/role` | Per-actor sweeps for concurrent scenarios, with the stability check that makes them sound. |
 | `fault/crash` | Rebuilds the on-disk state a power cut could leave, then runs a check on every one of them. SQLite's third loop. |
 | `fault/sql` | `database/sql` driver adapter. Wraps a `driver.Connector`, counts the connections it hands out, and refuses a pool wider than one. |
-| `fault/tools` | Build-time gates. A separate module, and not part of the library. |
+| `fault/tools` | Build-time gates. A separate module, and not part of the library. `go tool coupling` measures data- and control-coupling coverage in **your** module too — see [docs/coupling-workflow.md](docs/coupling-workflow.md). |
 
 Adapters need `Points` and `Trip` and nothing else, so anyone can write one in
 their own module. Run `go doc github.com/dd0wney/fault` for the contract.
