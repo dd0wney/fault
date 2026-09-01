@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 
@@ -87,6 +88,92 @@ func TestOSPerformsRealOperations(t *testing.T) {
 	}
 }
 
+// errShape names the ONE concrete type a method really returns, and reads its
+// Op field.
+//
+// A single helper that tried *os.PathError and then *os.LinkError would be
+// shorter and would pass for a method that returned the wrong one of the two.
+// That difference is what this table exists to pin: Rename reports an
+// *os.LinkError and every other method here reports an *os.PathError. A caller
+// that type-switches on the two cannot be tested against an adapter that
+// confuses them, and no other gate in this repository can see the confusion.
+type errShape struct {
+	name string
+	op   func(error) (string, bool)
+}
+
+var (
+	pathError = errShape{"*os.PathError", func(err error) (string, bool) {
+		var e *os.PathError
+		if !errors.As(err, &e) {
+			return "", false
+		}
+		return e.Op, true
+	}}
+
+	linkError = errShape{"*os.LinkError", func(err error) (string, bool) {
+		var e *os.LinkError
+		if !errors.As(err, &e) {
+			return "", false
+		}
+		return e.Op, true
+	}}
+)
+
+// opFixture carries the paths a control needs to make the REAL os package
+// fail.
+type opFixture struct {
+	real    faultfs.FS
+	dir     string
+	regular string
+	missing string
+}
+
+// opCase is one row: a way to make the real os package fail, the same
+// operation under injection, and the error shape both must have.
+type opCase struct {
+	name  string
+	real  func(opFixture) error
+	inj   func(faultfs.FS) error
+	shape errShape
+}
+
+// opCases is package-level so that TestTheOpTableCoversTheFSInterface can
+// compare it against fs.FS. A table local to a test function is invisible to
+// reflection, and that is how Rename went missing from it.
+var opCases = []opCase{
+	{"OpenFile",
+		func(f opFixture) error { _, err := f.real.OpenFile(f.missing, os.O_RDONLY, 0); return err },
+		func(f faultfs.FS) error { _, err := f.OpenFile("x", os.O_RDONLY, 0); return err },
+		pathError},
+	{"Remove",
+		func(f opFixture) error { return f.real.Remove(f.missing) },
+		func(f faultfs.FS) error { return f.Remove("x") },
+		pathError},
+	{"Stat",
+		func(f opFixture) error { _, err := f.real.Stat(f.missing); return err },
+		func(f faultfs.FS) error { _, err := f.Stat("x"); return err },
+		pathError},
+	{"ReadDir",
+		func(f opFixture) error { _, err := f.real.ReadDir(f.missing); return err },
+		func(f faultfs.FS) error { _, err := f.ReadDir("d"); return err },
+		pathError},
+	{"MkdirAll",
+		// A directory under a regular file: the real MkdirAll reports the
+		// failing syscall, not the helper that called it.
+		func(f opFixture) error { return f.real.MkdirAll(filepath.Join(f.regular, "a", "b"), 0o700) },
+		func(f faultfs.FS) error { return f.MkdirAll("d", 0o700) },
+		pathError},
+	{"Rename",
+		// The one row whose error type differs, and the row that was missing
+		// when this table was first compared against the interface. Renaming a
+		// path that does not exist is the portable way to make the real one
+		// fail.
+		func(f opFixture) error { return f.real.Rename(f.missing, filepath.Join(f.dir, "renamed")) },
+		func(f faultfs.FS) error { return f.Rename("a", "b") },
+		linkError},
+}
+
 // The Op strings were measured against the real os package rather than
 // remembered, and three of the first guesses were wrong: MkdirAll reports
 // "mkdir" and not "mkdirall", ReadDir reports "open" because it opens the
@@ -105,35 +192,14 @@ func TestInjectedOpStringsMatchTheRealOnes(t *testing.T) {
 	if err := os.WriteFile(regular, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	missing := filepath.Join(dir, "no-such-directory", "f")
-	real := faultfs.OS()
-
-	// Each case makes the REAL os package fail, and reads the Op it reported.
-	cases := []struct {
-		name string
-		real func() error
-		inj  func(faultfs.FS) error
-	}{
-		{"OpenFile",
-			func() error { _, err := real.OpenFile(missing, os.O_RDONLY, 0); return err },
-			func(f faultfs.FS) error { _, err := f.OpenFile("x", os.O_RDONLY, 0); return err }},
-		{"Remove",
-			func() error { return real.Remove(missing) },
-			func(f faultfs.FS) error { return f.Remove("x") }},
-		{"Stat",
-			func() error { _, err := real.Stat(missing); return err },
-			func(f faultfs.FS) error { _, err := f.Stat("x"); return err }},
-		{"ReadDir",
-			func() error { _, err := real.ReadDir(missing); return err },
-			func(f faultfs.FS) error { _, err := f.ReadDir("d"); return err }},
-		{"MkdirAll",
-			// A directory under a regular file: the real MkdirAll reports the
-			// failing syscall, not the helper that called it.
-			func() error { return real.MkdirAll(filepath.Join(regular, "a", "b"), 0o700) },
-			func(f faultfs.FS) error { return f.MkdirAll("d", 0o700) }},
+	fixture := opFixture{
+		real:    faultfs.OS(),
+		dir:     dir,
+		regular: regular,
+		missing: filepath.Join(dir, "no-such-directory", "f"),
 	}
 
-	for _, tc := range cases {
+	for _, tc := range opCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// The Op string is not portable, and CI found it rather than
 			// reasoning finding it. On Windows the real os package reports the
@@ -148,9 +214,9 @@ func TestInjectedOpStringsMatchTheRealOnes(t *testing.T) {
 				t.Skipf("the Op string is platform-specific on %s", runtime.GOOS)
 			}
 
-			var realPath *os.PathError
-			if !errors.As(tc.real(), &realPath) {
-				t.Fatalf("the control produced no *os.PathError, so this compares nothing")
+			realOp, ok := tc.shape.op(tc.real(fixture))
+			if !ok {
+				t.Fatalf("the control produced no %s, so this compares nothing", tc.shape.name)
 			}
 
 			var injected error
@@ -160,15 +226,55 @@ func TestInjectedOpStringsMatchTheRealOnes(t *testing.T) {
 					injected = err
 				}
 			}
-			var injPath *os.PathError
-			if !errors.As(injected, &injPath) {
-				t.Fatalf("injected error is %T, want *os.PathError: %v", injected, injected)
+			injOp, ok := tc.shape.op(injected)
+			if !ok {
+				t.Fatalf("injected error is %T, want %s: %v", injected, tc.shape.name, injected)
 			}
 
-			if injPath.Op != realPath.Op {
-				t.Errorf("injected Op = %q, but the real os package reports %q",
-					injPath.Op, realPath.Op)
+			if injOp != realOp {
+				t.Errorf("injected Op = %q, but the real os package reports %q", injOp, realOp)
 			}
 		})
+	}
+}
+
+// Contract rule 4, one level up from TestInjectedOpStringsMatchTheRealOnes.
+//
+// That test drives a table and proves every method IN THE TABLE reports the Op
+// the real os package reports. It says nothing about a method the table omits,
+// and the table is written by hand. This one compares the table against the
+// interface itself.
+//
+// This is fs/contract_test.go's check, applied to a SECOND hand-written table
+// in the same package. That check compares the operation table against fs.FS
+// and could not see this one, because this one was local to a test function.
+func TestTheOpTableCoversTheFSInterface(t *testing.T) {
+	iface := reflect.TypeOf((*faultfs.FS)(nil)).Elem()
+
+	inTable := make(map[string]bool, len(opCases))
+	for _, c := range opCases {
+		inTable[c.name] = true
+	}
+
+	for i := range iface.NumMethod() {
+		name := iface.Method(i).Name
+		if !inTable[name] {
+			t.Errorf("fs.FS has %s and the Op table does not, so nothing proves the error it "+
+				"injects has the shape and the Op string the os package really reports. "+
+				"An injected error that a caller's predicate answers differently sends that "+
+				"caller down a branch the real failure would not.", name)
+		}
+	}
+
+	for name := range inTable {
+		if _, ok := iface.MethodByName(name); !ok {
+			t.Errorf("the Op table has %s and fs.FS does not", name)
+		}
+	}
+
+	// The positive control. If the interface reported no methods, both loops
+	// above would pass having compared nothing.
+	if iface.NumMethod() == 0 {
+		t.Fatal("reflection reported no methods on fs.FS, so this check compared nothing")
 	}
 }
