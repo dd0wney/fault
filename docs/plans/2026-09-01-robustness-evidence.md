@@ -306,7 +306,16 @@ raised 0.42 → 0.44.
 that mis-measures the profile shape external callers depend on should not be the
 thing that gets tagged.
 
-### 6. Tag the `tools` module
+### 6. Tag the `tools` module  ✔ done 2026-09-01
+
+**Tagged `tools/v0.1.0` at `b0162d4`**, CI green on all ten jobs, after 5a
+repaired the tool. Verified from a throwaway module with no `replace`:
+`go get -tool github.com/dd0wney/fault/tools/coupling@v0.1.0` resolved to
+`require github.com/dd0wney/fault/tools v0.1.0` — the tag, not a
+pseudo-version — and `go tool coupling -h` ran there.
+
+Before the tag, `proxy.golang.org/github.com/dd0wney/fault/tools/@v/list`
+returned nothing at all.
 
 `tools/go.mod` declares `tool github.com/dd0wney/fault/tools/coupling`, and Go
 resolves a module in a subdirectory through a tag prefixed with that
