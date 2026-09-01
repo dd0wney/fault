@@ -174,6 +174,91 @@ a `1` by reading the row, not by picking a percentage in advance.
 
 ---
 
+## 7. Robustness coverage: which interfaces had their *error* paths executed
+
+Everything above measures whether a declared interface was exercised. It does not
+say whether it was exercised **under failure**, and the difference is the whole
+reason a fault-injection library is involved.
+
+DO-178C 6.4.2.2 asks for two kinds of test case: normal range, and robustness —
+"behaviour when abnormal conditions and faults are present". A `fault.Sweep`
+produces both in one loop: for a K-operation scenario it yields K+1 passes, one
+failing each operation in turn plus a terminating pass that fails none. That last
+pass **is** the normal range case.
+
+`go test -coverprofile` accumulates across the binary, so the profile merges
+them. Measured on a three-package demonstration module:
+
+| Site | normal only | merged | robustness only |
+|---|---|---|---|
+| `app.Save` | 4/7 57.1% | 5/7 71.4% | 1/7 14.3% |
+| `store.Write` | 6/12 50.0% | **12/12 100.0%** | 6/12 50.0% |
+| `config.Limit` | 1/1 100.0% | **1/1 100.0%** | **0/1 0.0%** |
+
+`store.Write` and `config.Limit` are indistinguishable in the merged column —
+both 100.0%, exit 0. One has had its error handling exercised exhaustively. The
+other has none exercised at all. The objective's letter is satisfied identically
+by both.
+
+### Getting the third column
+
+Write a normal range test alongside the sweep. A zero `fault.Points` arms
+nothing, so every operation succeeds:
+
+```go
+func TestNormalRange(t *testing.T) {
+	fsys := faultfs.New(&fault.Points{}, faultfs.OS())
+	if _, err := app.Save(fsys, t.TempDir(), []byte("record")); err != nil {
+		t.Fatalf("the normal range case must not fail: %v", err)
+	}
+}
+```
+
+That is not an extra cost this page invents. It is the other half of 6.4.2.2,
+which the standard asks for anyway.
+
+Then:
+
+```sh
+go test -run TestNormalRange -coverpkg=./... -coverprofile=normal.out ./...
+go test                      -coverpkg=./... -coverprofile=merged.out ./...
+go tool covdiff  -baseline normal.out -profile merged.out -o robustness.out
+go tool coupling -root . -registry docs/couplings.tsv -profile robustness.out
+```
+
+`covdiff` writes a profile in which a block is covered only when `merged` covered
+it and `normal` did not. The result is an ordinary coverage profile, so the same
+`coupling` command reads it — the measure needs no new measuring tool.
+
+```
+     1/7     14.3%  C1   control  example.com/demo/app.Save
+     6/12    50.0%  C2   data     example.com/demo/store.Write
+     0/1      0.0%  C3   data     example.com/demo/config.Limit
+
+  1 coupling site(s) have no covered statement at all.
+```
+
+Exit 1, naming `C3`: a declared interface whose error path never executed.
+
+### The refusal that matters most
+
+`covdiff` refuses a baseline that covered nothing:
+
+```
+covdiff: the baseline covers no block at all, so subtracting it changes nothing
+and every coupling would report its whole coverage as reached only under
+injection. A normal range run that did not build, or a -run pattern that matched
+no test, produces exactly this
+```
+
+Without that refusal, a `-run` pattern matching no test yields a profile of
+zeroes, the subtraction becomes a no-op, and **every** interface reports its full
+coverage as robustness-only. That reads as "every error path is exercised" — a
+green report manufactured by a control that did not run. It was reproduced with a
+real `go test -run TestNoSuchTest` while writing this section.
+
+---
+
 ## The whole thing, in one block
 
 ```sh
@@ -182,4 +267,14 @@ $EDITOR docs/couplings.tsv                                   # a row per couplin
 go test -coverpkg=./... -coverprofile=coverage.out ./...      # note -coverpkg
 go tool coupling -root . -registry docs/couplings.tsv -profile coverage.out
 echo $?                                                       # 0, 1 or 2
+```
+
+And for robustness coverage — which interfaces had their error paths executed:
+
+```sh
+go test -run TestNormalRange -coverpkg=./... -coverprofile=normal.out ./...
+go test                      -coverpkg=./... -coverprofile=merged.out ./...
+go tool covdiff  -baseline normal.out -profile merged.out -o robustness.out
+go tool coupling -root . -registry docs/couplings.tsv -profile robustness.out
+echo $?
 ```
