@@ -394,6 +394,19 @@ func (f *faultFile) Seek(offset int64, whence int) (int64, error) {
 //
 // Note what does NOT happen: the file position is untouched either way.
 // WriteAt carries its own offset, which is why it costs the recorder nothing.
+//
+// THE INJECTED Op IS "write", NOT "writeat", and that is contract rule 4.
+// MEASURED 2026-09-01 by three independent routes -- a closed handle,
+// /dev/full and /proc/self/mem -- the os package reports Op "write" for a
+// failing WriteAt. It names the syscall, not the Go method. An adapter
+// reporting "writeat" hands a caller that switches on Op a value no real
+// failure produces, which is the method-name form that
+// TestInjectedOpStringsMatchTheRealOnes was written to prevent one level up.
+//
+// The capability refusal below keeps "writeat" deliberately. It carries
+// errors.ErrUnsupported, which no filesystem produces for this call, so there
+// is nothing for it to be indistinguishable from -- and its message names the
+// capability the base lacks, which "write" would misstate.
 func (f *faultFile) WriteAt(b []byte, off int64) (int, error) {
 	w, ok := f.base.(interface {
 		WriteAt(p []byte, off int64) (int, error)
@@ -405,7 +418,7 @@ func (f *faultFile) WriteAt(b []byte, off int64) (int, error) {
 		return w.WriteAt(b, off)
 	}
 	if !f.shortWrite {
-		return 0, f.fail("writeat")
+		return 0, f.fail("write")
 	}
 
 	// Half the buffer, at the offset the caller gave. The same rule Write
@@ -425,7 +438,7 @@ func (f *faultFile) WriteAt(b []byte, off int64) (int, error) {
 		// count would claim bytes that never landed.
 		return n, baseErr
 	}
-	return n, f.failWith("writeat", syscall.ENOSPC)
+	return n, f.failWith("write", syscall.ENOSPC)
 }
 
 func (f *faultFile) Sync() error {

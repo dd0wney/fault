@@ -167,20 +167,54 @@ Write the table before the repair and watch the rows nothing answers today.
 - The `Op` comparison becomes one row of this table. Not a second table beside
   it — a second list is the drift `fs/contract_test.go` exists to remove.
 
-### 4. The predicate table at the File level
+### 4. The predicate table at the File level  ✔ done 2026-09-01
 
-No `File` method has a rule 4 check of any kind today. The methods are `Read`,
-`Write`, `Sync`, `Truncate`, `Close`, and the two optional ones, `Seek` and
-`WriteAt`.
+**It found a live defect on its first run.** `WriteAt` injected `Op: "writeat"`.
+The os package reports `Op: "write"` for the same call, confirmed by three
+independent routes — a closed handle, `/dev/full` and `/proc/self/mem`. Every
+other method already agreed.
 
-**Acceptance**
-- Every `File` method has a row for every predicate.
-- `NewShortWrite` gets its own rows: it injects `ENOSPC` where the plain
-  constructor injects `EIO`, and `fs/fault.go:487` records why that difference
-  is load-bearing.
-- A reflective check compares the table against `fs.File`, so a method added
-  later cannot miss it. This is `fs/contract_test.go`'s pattern, applied to a
-  second table.
+That is precisely the method-name form the FS-level test was written to prevent.
+Its doc comment says a tidy-up making Op strings match method names "would pass
+the entire suite while making every injected error a lie about what the
+filesystem does". The FS level was guarded against it. The File level had no
+rule 4 check of any kind, and that is where the form had already taken hold.
+
+`fs/fault.go` now injects `"write"` from both WriteAt paths, and the doc comment
+carries the measurement so nobody restores the method name from memory.
+
+**A second Op string was left alone, deliberately.** The capability refusal
+keeps `"writeat"`. It carries `errors.ErrUnsupported`, which no filesystem
+produces for this call, so there is nothing for it to be indistinguishable
+from — and its message names the capability the base lacks, which `"write"`
+would misstate. `TestTheCapabilityRefusalNamesTheCapability` asserts that,
+because a deliberate decision no test asserts is indistinguishable from the
+accident it sits beside.
+
+**The Op check and the predicate check are separate, and that split is the
+design.** The Op string names the syscall and does not depend on the errno, so a
+real error of any class is a correct source for it — a closed handle supplies
+one for all seven methods. The predicate comparison needs a real error of the
+*injected* class, and task 5's routes reach only `Read`, `Write` and `WriteAt`.
+Without the split, `Sync`, `Truncate`, `Close` and `Seek` would have had no
+check at all rather than a partial one, and the table would have been silent
+about which.
+
+Shipped in `fs/predicate_test.go`:
+- `TestInjectedFileOpStringsMatchTheRealOnes` — all seven methods.
+- `TestTheFileOpTableCoversTheFileInterface` — the reflective check, plus a
+  hand-written line for `Seek` and `WriteAt`, which are members of no interface.
+- `TestInjectedAndRealErrorsAnswerEveryPredicateTheSame` — eight predicates
+  across five class-matched rows. All eight already agreed once the Op was
+  fixed, which is the result worth recording: rule 4 held for the errno
+  predicates and failed only on the string.
+- A positive control proving at least one predicate separates a real filesystem
+  error from a bare `errors.New` — the shape that cost the peer project a
+  record.
+
+**Still open at this level.** `Sync`, `Truncate`, `Close` and `Seek` are checked
+for `Op` only. Closing that needs a route to a real `EIO` for them, and task 5
+records that the obvious ones report `EINVAL` instead.
 
 ### 5. Real EIO and real ENOSPC controls  ✔ done 2026-09-01
 
