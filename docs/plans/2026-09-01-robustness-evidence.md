@@ -108,7 +108,7 @@ in first.
 **Acceptance** — `gh pr view 28` reports MERGED; CI green on the merge commit;
 `scripts/mutation-selftest.sh` clean in a fresh worktree.
 
-### 2. Merge #27, the runnable examples
+### 2. Merge #27, the runnable examples  ✔ done 2026-09-01
 
 118 lines of example code live in doc comments and nothing compiles them. A
 documented call that cannot compile is a defect in the API contract, and
@@ -182,24 +182,54 @@ No `File` method has a rule 4 check of any kind today. The methods are `Read`,
   later cannot miss it. This is `fs/contract_test.go`'s pattern, applied to a
   second table.
 
-### 5. Record how a real EIO and a real ENOSPC were measured
+### 5. Real EIO and real ENOSPC controls  ✔ done 2026-09-01
 
-Tasks 3 and 4 compare against real errors, and only some are portably
-reachable: `ErrClosed` (write after close), `EISDIR` (read a directory),
-`ENOENT`, `EACCES`. **`EIO` and `ENOSPC` are not portably reachable, and they
-are the two errors this package injects.**
+**This task's premise was wrong, and measuring it is what corrected it.**
 
-So measure them once, deliberately, and freeze the result as test data.
-`fs/fs.go:56` records that every `Op` string here was established the same way:
-"Every Op string here was measured by making the real os package fail and
-reading what it reported. Do not change one from memory."
+As written, this task claimed: "`EIO` and `ENOSPC` are not portably reachable,
+and they are the two errors this package injects" — and it planned to measure
+them once by hand and freeze the result as test data.
 
-**Acceptance**
-- The method for each is written down — a small filesystem for `ENOSPC`, an
-  error-injecting device for `EIO`.
-- Each measurement carries its platform, its kernel, and its date.
-- Tasks 3 and 4 read that data rather than a constant typed from memory.
-- A row nobody has measured says so out loud. It must not quietly pass.
+MEASURED 2026-09-01 on linux/amd64, kernel 7.1.10, go1.27.0. Both are reachable
+from an ordinary unprivileged test, through two character devices:
+
+	ENOSPC   write to /dev/full, which reports a full disk on every write
+	EIO      read or write /proc/self/mem at offset 0, which is never mapped
+
+	Write    /dev/full        *os.PathError{Op: "write", Err: ENOSPC(28)}
+	WriteAt  /dev/full        *os.PathError{Op: "write", Err: ENOSPC(28)}
+	Read     /proc/self/mem   *os.PathError{Op: "read",  Err: EIO(5)}
+	Write    /proc/self/mem   *os.PathError{Op: "write", Err: EIO(5)}
+
+Five consecutive runs, bit-identical. `yama`'s `ptrace_scope` restricts reading
+*another* process's memory and does not reach `/proc/self/mem`; measured at
+`ptrace_scope=1`.
+
+So the deliverable changed from frozen data to a **live control**, which is
+strictly better for the reason this repository already records about numbers: a
+frozen figure cannot notice when the thing it describes changes.
+
+What the routes do NOT reach, recorded rather than left to be discovered: `Sync`
+and `Truncate` report `EINVAL` on both devices, `Close` reports nothing, and no
+FS-level method reaches either errno (`Remove`/`Rename` give `EACCES`,
+`MkdirAll`/`ReadDir` give `ENOTDIR`, `Stat` succeeds). Those rows of the
+predicate table compare shape and `Op` only, and have to say so.
+
+Shipped in `fs/realerr_test.go`:
+- `onFullDevice` and `onUnmappedMemory`, the two routes.
+- `TestTheRealErrorControlsProduceTheErrnoTheyClaim` — the control's own
+  control, because a route that started returning `EINVAL` would hand every
+  predicate row an error of the wrong class.
+- `TestTheUnreachableRoutesAreStillUnreachable` — the "not reachable" list
+  asserted rather than described, so a kernel that makes one of them work is
+  reported as the good news it is.
+- **On Linux a broken route fails; it does not skip.** A skip there would keep
+  CI green over a gate that no longer gates. Elsewhere the devices do not exist,
+  so the skip is honest and CI prints the per-leg count.
+
+This task now runs BEFORE the predicate tables rather than after them, because
+those tables can now compare injected-EIO against real-EIO instead of settling
+for a shape comparison.
 
 ---
 
@@ -400,8 +430,15 @@ mention of MC/DC may reasonably infer the structural set is complete.
 
 ## Sequence
 
-1 and 2 first. Then Group B (3 → 4 → 5), because the evidence has to be sound
-before anyone produces it. Group C (6, 7) is independent of Group B.
+1 and 2 first. Then Group B, because the evidence has to be sound before anyone
+produces it. Group C (6, 7) is independent of Group B.
+
+**Group B is 3 → 5 → 4, and that is a correction.** As first written it was
+3 → 4 → 5, on the assumption that a real EIO could not be reached from a test
+and that tasks 3 and 4 would therefore compare shape only. Task 5 measured that
+assumption and it was wrong on Linux, so the controls come before the tables
+that consume them. The tables can now compare injected-EIO against real-EIO,
+which is the full strength of rule 4 rather than a proxy for it.
 
 Group D is strictly ordered: 8 → 9 → 10 → 11. Task 8 before 9 without exception
 — a fixture written after the mechanism proves only that the mechanism is
