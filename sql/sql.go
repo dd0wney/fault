@@ -42,6 +42,7 @@ var errConcurrentConns = errors.New("fault/sql: two connections were live at onc
 type Fault struct {
 	mu          sync.Mutex
 	outstanding int   // connections handed out and not yet closed
+	maxOut      int   // the most held at once, which never falls
 	err         error // the first refusal; every later one is redundant
 
 	p    *fault.Points
@@ -136,6 +137,30 @@ func OpenDB(p *fault.Points, base driver.Connector) (*stdsql.DB, *Fault) {
 	return db, f
 }
 
+// MaxOutstanding reports the most connections held at once, and it never falls.
+//
+// This is the third of the three readings a leak check needs, and the one that
+// makes the other two trustworthy. Outstanding() == 0 at the end of a scenario
+// is the PASS condition for "nothing leaked". It is also exactly what a
+// scenario that never connected returns, so the two are indistinguishable and a
+// sweep over code that opened no connection reports a clean leak check having
+// compared 0 against 0.
+//
+//	if f.MaxOutstanding() == 0 {
+//		t.Errorf("no connection was ever opened, so the leak check proved nothing")
+//	}
+//
+// It reads 0 or 1 here and nowhere higher, because [Fault.Connect] refuses a
+// second live connection. That is not a smaller version of the reading -- 0
+// against 1 is the whole of the question this method answers, and a scenario
+// that took a wrong turn before its first Connect is exactly the case that
+// looks like success everywhere else.
+func (f *Fault) MaxOutstanding() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.maxOut
+}
+
 // Outstanding reports how many connections have been opened and not closed.
 //
 // This is the leak half of what a fault-injection loop must assert, and it is
@@ -196,6 +221,12 @@ func (f *Fault) Connect(ctx context.Context) (driver.Conn, error) {
 
 	f.mu.Lock()
 	f.outstanding++
+	// max rather than an if, for the reason fs.Fault records at the same line:
+	// written as a comparison the mutation gate produces `>=`, which assigns
+	// the same value when the two are equal, so it is an equivalent mutant no
+	// test can kill -- and this package's floor is 1.00. The builtin carries no
+	// operator to mutate.
+	f.maxOut = max(f.maxOut, f.outstanding)
 	// The refusal measures the property, not the setting. Two live connections
 	// mean the operation index no longer identifies one operation, whatever
 	// SetMaxOpenConns was told.

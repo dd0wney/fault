@@ -417,7 +417,49 @@ so the command could exit 0 having written nothing.
 
 ## Group E — the assertions a robustness pass has to make
 
-### 12. `MaxOutstanding` on `alloc.Fault` and `sql.Fault`
+### 12. `MaxOutstanding` on `alloc.Fault` and `sql.Fault`  ✔ done 2026-09-01
+
+Both shipped, with the semantics `fs.Fault.MaxOutstanding` established.
+
+**The counter is `max(a.maxOut, a.outstanding)` and not a comparison, on
+purpose.** `fs/fault.go` records why at the same line: written as `>`, the
+mutation gate produces `>=`, which assigns the same value when the two are
+equal — an equivalent mutant no test can kill — and both packages carry a 1.00
+floor that leaves no room for one. The builtin has no operator to mutate.
+Measured: `./alloc/` 1.000000 of 19 (was 17), `./sql/` 1.000000 of 90 (was 88).
+Two new mutants each, both killed.
+
+**`sql.Fault.MaxOutstanding` reads 0 or 1 and nowhere higher**, because
+`Connect` refuses a second live connection. That is not a smaller version of the
+reading: 0 against 1 is the whole question, and a scenario that took a wrong turn
+before its first `Connect` is exactly the case that looks like success everywhere
+else in a suite.
+
+**The rule 3 contract check caught the new method**, which is the gate this plan
+opened with working on the plan's own code:
+
+	Fault.MaxOutstanding exists on the wrapper and nothing here says whether it
+	counts. An operation that skips Trip is invisible to the sweep, and an
+	exemption nobody wrote down is indistinguishable from an oversight
+
+It is exempt with a reason now, and removing the exemption reproduces that
+refusal. Note the asymmetry it revealed: `sql/contract_test.go` reflects over the
+concrete wrapper and `alloc/contract_test.go` over the `Allocator` interface, so
+only the first could see a method that is not on an interface.
+
+**Three assertions, each verified against its opposite**: a mark that never
+rises, a mark that counts refusals, and the same for `sql`.
+
+**A test I wrote was wrong and the sweep said so.** The first version drove
+"nothing was ever allocated" through `fault.Sweep`, and the sweep refused — "the
+scenario performed no operations, so the sweep proved nothing" — because `Free`
+calls no `Trip`. That is the sweep's own negative control working, and it was the
+wrong instrument for the question. A zero `Points` is the right one.
+
+**`doc.go` now records the shape**, under "Counting what the adapter hands out".
+All three adapters answering `Outstanding` and `MaxOutstanding` is a property
+that did not exist before this task, and an adapter author should know to offer
+both.
 
 `fs.Fault` answers three questions and each one arrived from a defect:
 

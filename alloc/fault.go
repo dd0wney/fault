@@ -22,6 +22,7 @@ type Fault struct {
 	mu          sync.Mutex
 	refusing    bool // allFrom only: a refusal has already happened
 	outstanding int  // buffers handed out and not yet freed
+	maxOut      int  // the most held at once, which never falls
 }
 
 // New refuses one allocation and then behaves normally. It finds handlers that
@@ -74,6 +75,12 @@ func (a *Fault) Bytes(n int) ([]byte, error) {
 	// base allocator that failed on its own both returned above.
 	a.mu.Lock()
 	a.outstanding++
+	// max rather than an if, for the reason fs.Fault records at the same line:
+	// written as a comparison the mutation gate produces `>=`, which assigns
+	// the same value when the two are equal, so it is an equivalent mutant no
+	// test can kill -- and this package's floor is 1.00. The builtin carries no
+	// operator to mutate.
+	a.maxOut = max(a.maxOut, a.outstanding)
 	a.mu.Unlock()
 	return b, nil
 }
@@ -99,6 +106,34 @@ func (a *Fault) Free(b []byte) {
 	a.mu.Lock()
 	a.outstanding--
 	a.mu.Unlock()
+}
+
+// MaxOutstanding reports the most buffers held at once, and it never falls.
+//
+// This is the third of the three readings a leak check needs, and the one that
+// makes the other two trustworthy. Outstanding() == 0 at the end of a scenario
+// is the PASS condition for "nothing leaked". It is also exactly what a
+// scenario that never allocated returns, so the two are indistinguishable and a
+// sweep over a component that took no buffer reports a clean leak check having
+// compared 0 against 0.
+//
+//	if a.MaxOutstanding() == 0 {
+//		t.Errorf("nothing was ever allocated, so the leak check proved nothing")
+//	}
+//
+// fs.Fault has carried this reading since the day it found a third reading in a
+// caller within minutes of merging -- "held nothing at the moment I looked",
+// which is weaker than both of the others and looks identical to them. This
+// package answered only the first question until now, and it counts something a
+// scenario can leak, so the blind spot was the same one.
+//
+// Note what it does NOT do. Free with no matching Bytes drives Outstanding
+// negative on purpose, and this is unaffected: a high-water mark only rises, so
+// an unmatched Free cannot hide behind it.
+func (a *Fault) MaxOutstanding() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.maxOut
 }
 
 // Outstanding reports how many buffers have been handed out and not freed.

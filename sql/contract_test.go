@@ -70,9 +70,10 @@ var sqlExempt = map[string]string{
 	"rows.ColumnTypePrecisionScale":   "a property of the result set.",
 	"rows.HasNextResultSet":           "a question about the result set. NextResultSet, which does the work, DOES count.",
 
-	"Fault.Outstanding": "this adapter's own API, not an operation on the driver.",
-	"Fault.Err":         "this adapter's own API, not an operation on the driver.",
-	"Fault.Driver":      "returns the wrapped driver. It performs nothing.",
+	"Fault.Outstanding":    "this adapter's own API, not an operation on the driver.",
+	"Fault.MaxOutstanding": "this adapter's own API, not an operation on the driver. It reads a high-water mark the counter already keeps, and performs nothing.",
+	"Fault.Err":            "this adapter's own API, not an operation on the driver.",
+	"Fault.Driver":         "returns the wrapped driver. It performs nothing.",
 }
 
 func TestEverySQLWrapperMethodIsCountedOrExempt(t *testing.T) {

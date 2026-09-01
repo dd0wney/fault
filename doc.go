@@ -123,6 +123,32 @@
 // so it can live in any module. The adapters here are ordinary consumers of the
 // published API and hold no privileged access.
 //
+// # Counting what the adapter hands out
+//
+// A fault-injection loop needs three assertions, not one: the operation failed,
+// nothing leaked, and the state is still valid. This package can help with none
+// of them -- it does not know what a resource is -- but an adapter that hands
+// something out can answer the second, and every adapter here does:
+//
+//	Outstanding()     how many are held now
+//	MaxOutstanding()  the most held at once, which never falls
+//
+// The second method is not a convenience. Outstanding() == 0 at the end of a
+// scenario is the PASS condition for "nothing leaked", and it is also exactly
+// what a scenario that acquired nothing returns. The two are indistinguishable,
+// so a sweep over a component that took no resource reports a clean leak check
+// having compared 0 against 0:
+//
+//	if adapter.MaxOutstanding() == 0 {
+//		t.Errorf("nothing was ever acquired, so the leak check proved nothing")
+//	}
+//
+// An adapter offering both lets a caller ask that question the same way of every
+// resource class it uses. The third assertion has no such shape: only the
+// caller's own predicate can decide whether the state is valid, and an adapter
+// that claimed otherwise would manufacture the false green all of this exists to
+// prevent.
+//
 // # Testing an adapter
 //
 // Drive the adapter's own tests through [Sweep]. There is no exported way to
