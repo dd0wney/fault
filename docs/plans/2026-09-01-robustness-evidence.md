@@ -269,6 +269,43 @@ for a shape comparison.
 
 ## Group C — the measure has to reach a caller's module
 
+### 5a. The tool mis-measured a `-coverpkg` profile — unplanned, and it came first
+
+Not in the plan as written, and it displaced task 6 on evidence.
+
+Task 7 said to write the caller's workflow. Writing it meant running the tool
+against a module that is not this one, which nobody had ever done. Two defects
+came out of the first attempt:
+
+**A repeated block was counted once per record.** `go test -coverpkg=./...` over
+seven packages writes 5117 profile lines for **731 distinct blocks** — every test
+binary emits a record for every instrumented block, executed or not. `measure`
+summed them, so numerator and denominator both grew sevenfold and the figure
+moved from 98.6% to 20.7% with nothing about the code or the tests changed.
+
+That is not an edge case: `-coverpkg` is the flag a caller **needs** when a
+coupling site sits in a package whose statements execute only from another
+package's tests. Without it the site reads 0/N and the tool exits 1 on a finding
+that is not real; with it the tool read a number that meant nothing. Both are
+wrong, in opposite directions. This module never hit either, because all seven of
+its packages have their own tests.
+
+**The documentation named the wrong half of the tool.** §6 and `coupling.go` both
+said the registry's package column is an "import path relative to the module
+root". It is the full import path — `checkComplete` compares against
+module+"/"+dir. `resolve` accepts the relative form, so the two halves disagreed
+and the document named the one that is wrong. It cost the first attempt at task 7.
+
+Fixed, with the rule Go's own cover tooling uses, plus a fourth refusal for a
+profile whose records disagree about a block's statement count. Verified by
+re-measurement: both invocations now agree exactly on this module, 205/208 across
+14 sites, every row identical. `./coupling/` mutation 0.426866 → 0.442197, floor
+raised 0.42 → 0.44.
+
+**Why it came before task 6.** The plan says to tag the `tools` module. A tool
+that mis-measures the profile shape external callers depend on should not be the
+thing that gets tagged.
+
 ### 6. Tag the `tools` module
 
 `tools/go.mod` declares `tool github.com/dd0wney/fault/tools/coupling`, and Go
@@ -283,7 +320,7 @@ useful only inside this repository.
   verified the root module's `v0.1.0`.
 - `go tool coupling -h` runs in that module.
 
-### 7. The caller's workflow, and a registry template
+### 7. The caller's workflow, and a registry template  ✔ done 2026-09-01
 
 `docs/design/2026-08-29-coupling-coverage.md` specifies the tool for the person
 building it. Nothing tells a stranger how to point it at their own code.
