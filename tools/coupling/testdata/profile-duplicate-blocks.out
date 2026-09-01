@@ -1,0 +1,22 @@
+mode: set
+fixture/store.go:8.30,9.18 1 1
+fixture/store.go:9.18,11.3 1 0
+fixture/store.go:11.8,13.3 1 1
+fixture/store.go:13.2,14.11 1 1
+fixture/store.go:18.38,19.20 1 0
+fixture/store.go:19.20,21.3 1 0
+fixture/store.go:21.2,22.11 1 0
+fixture/store.go:8.30,9.18 1 0
+fixture/store.go:9.18,11.3 1 1
+fixture/store.go:11.8,13.3 1 1
+fixture/store.go:13.2,14.11 1 1
+fixture/store.go:18.38,19.20 1 0
+fixture/store.go:19.20,21.3 1 0
+fixture/store.go:21.2,22.11 1 0
+fixture/store.go:8.30,9.18 1 0
+fixture/store.go:9.18,11.3 1 0
+fixture/store.go:11.8,13.3 1 1
+fixture/store.go:13.2,14.11 1 1
+fixture/store.go:18.38,19.20 1 0
+fixture/store.go:19.20,21.3 1 0
+fixture/store.go:21.2,22.11 1 0

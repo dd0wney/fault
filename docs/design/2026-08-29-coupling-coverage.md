@@ -137,6 +137,32 @@ couple itself. The rewrite keeps the proxy — it is what the handbook's "releva
 read/write and procedure call statements" describes — and says so in its output
 header, so nobody mistakes the number for something stronger.
 
+**5.5 Count a repeated block once.** MEASURED 2026-09-01, and this one was
+found by pointing the tool at a module that is not this one.
+
+`go test -coverpkg=./...` over the seven packages of `fault` writes 5117 profile
+lines for **731 distinct blocks**: every test binary emits a record for every
+instrumented block, whether it executed it or not. The first implementation
+summed the records, so both the numerator and the denominator grew sevenfold and
+the reported figure moved from 98.6% to 20.7% with nothing about the code or the
+tests changed.
+
+`-coverpkg` is not exotic. It is the flag a caller **needs** when a coupling site
+sits in a package whose statements are executed only from another package's
+tests. Without it that site reports 0/N and the tool exits 1; with it the tool
+reported a number that meant nothing. Both readings are wrong, in opposite
+directions, and a caller measuring their own module hits one or the other on the
+first attempt.
+
+The rule is the one Go's own cover tooling uses: a block is identified by its
+exact span, it counts once toward the total, and it is covered when **any**
+record for it has a non-zero count. Two records for one block that disagree
+about its statement count are a refusal — Go emits the same count every time, so
+a disagreement means the profile was assembled from builds of different source.
+
+With the rule in place both invocations agree exactly on this module: 205/208
+across 14 sites, every row identical.
+
 ## 6. Registry format
 
 Tab-separated, `#` for comments. One coupling per row.
@@ -145,7 +171,7 @@ Tab-separated, `#` for comments. One coupling per row.
 |---|---|---|
 | `id` | yes | Stable identifier, referenced by the architecture document. |
 | `kind` | yes | `data` or `control`. |
-| `package` | yes | Import path relative to the module root. |
+| `package` | yes | The **full** import path, for example `github.com/you/proj/store`. Not a path relative to the module root: `checkComplete` compares it against the module path joined to the directory, and refuses a row that does not match. |
 | `symbol` | yes | Function or method name. |
 | `lines` | no | `start-end`, to narrow the site within the symbol (§5.3). |
 | `note` | no | What the coupling is, in one line. |
