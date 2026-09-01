@@ -346,78 +346,74 @@ building it. Nothing tells a stranger how to point it at their own code.
 
 ---
 
-## Group D — the new measure
+## Group D — the new measure  ✔ done 2026-09-01
 
-### 8. A fixture that proves the hole — red first
+**Tasks 8, 9, 10 and 11 as written are superseded. Measuring the hole showed the
+mechanism they specified is not needed.**
 
-Build a small module with two coupling sites: one reached only on the
-terminating pass, one reached on a failing pass. Measure with `go tool coupling`
-as it stands.
+### What task 8 found, with real data rather than a fixture
 
-**Acceptance**
-- The tool reports both as covered and exits 0.
-- The fixture records that output verbatim, because that output *is* the defect.
-- The two sites are indistinguishable in the report. If they can be told apart
-  by any existing field, this plan's premise is wrong and the rest of the group
-  should stop.
+The plan said to build a fixture. A fixture was not necessary: a zero
+`fault.Points` arms nothing, so an ordinary test already produces a normal-range
+run, and two `go test` invocations give two real profiles. Measured on a
+three-package demonstration module:
 
-### 9. Per-pass capture, in a sibling package
+| Site | normal only | merged | robustness only |
+|---|---|---|---|
+| `app.Save` | 4/7 57.1% | 5/7 71.4% | 1/7 14.3% |
+| `store.Write` | 6/12 50.0% | **12/12 100.0%** | 6/12 50.0% |
+| `config.Limit` | 1/1 100.0% | **1/1 100.0%** | **0/1 0.0%** |
 
-The core has three exported names and they are meant to be permanent, so this
-cannot go there. A sibling package wraps a sweep, clears the counters before
-each pass, and writes a counter directory after it.
+`store.Write` and `config.Limit` read **identically** in the merged column —
+100.0%, exit 0 — and one has had its error handling exercised exhaustively while
+the other has none exercised at all. That is the premise of this plan,
+demonstrated rather than argued.
 
-Two constraints, and each has to be a refusal:
+### Task 9 is not needed, and that is the substantive change
 
-- `ClearCounters` errors without `-cover` **and** without atomic counter mode.
-  A package that swallowed either would emit a directory per pass whose contents
-  are the accumulated total — which looks exactly like a correct split.
-- A run that clears counters cannot also produce the ordinary `-coverprofile`,
-  because the clear discards it. This is a separate CI step, not an extra flag
-  on the existing one.
+The plan specified per-pass counter capture through
+`runtime/coverage.ClearCounters` and `WriteCountersDir`, in a sibling package,
+with `-covermode=atomic` and a separate CI step that could not also produce the
+ordinary profile.
 
-**Acceptance**
-- Refuses without `-cover`, naming the flag.
-- Refuses without atomic mode, naming `-covermode=atomic`.
-- Writes exactly K+1 directories for a K-operation scenario, and identifies
-  which one is the terminating pass.
-- The dependency gate still reports standard library only.
+**None of it is required.** The normal-range case is just "run the scenario with
+a zero `Points`", and the difference is a textual subtraction over two profiles.
 
-### 10. The report that separates the two sets
+Per-pass capture would answer a finer question — *which* operation's failure
+reached an interface — that objective 6.4.4.d does not ask. It was dropped on
+that basis, not forgotten. If the finer granularity is ever wanted, the design in
+the original task 9 still stands.
 
-	normal       the terminating pass alone
-	robustness   passes 1..K, merged
-	only-robust  covdata subtract: robustness minus normal
+### What shipped instead
 
-Then `covdata textfmt` on each, then `go tool coupling` on each.
+`go tool covdiff`, in the `tools` module:
 
-**Acceptance**
-- Every registry row gets one of three verdicts: exercised by a robustness pass;
-  exercised **only** by the normal range pass; never exercised.
-- The middle verdict is the finding this measure exists for, and the report says
-  why in the row rather than in a footnote.
-- No threshold. §3 of the design document is explicit: the tool reports and a
-  human decides, because a floor set before the number is understood is how a
-  coverage gate gets set wrong.
-- The exit code distinguishes "no covered statement" from "no *robustness*
-  statement". Collapsing them would make the new measure invisible to CI.
+	go test -run TestNormalRange -coverpkg=./... -coverprofile=normal.out ./...
+	go test                      -coverpkg=./... -coverprofile=merged.out ./...
+	go tool covdiff  -baseline normal.out -profile merged.out -o robustness.out
+	go tool coupling -root . -registry docs/couplings.tsv -profile robustness.out
 
-### 11. The selftest for the new gate
+A block in the output is covered when `merged` covered it and `normal` did not.
+The result is an ordinary coverage profile, so `go tool coupling` reads it
+unchanged: **the measure needs no new measuring tool.**
 
-§7 of the design document states the rule and this repository states it in the
-README: every gate ships with a selftest that runs first, because a gate that
-cannot report a violation and a gate with nothing to report print the same
-thing.
+Tasks 10 and 11 collapse into that. The report is the existing one, and the
+selftest is the command's own suite.
 
-**Acceptance**
-- One fixture per failure mode of the gate.
-- A fixture where every coupling has a robustness statement, exiting 0.
-- A fixture with empty counter directories, where the gate **refuses** rather
-  than reporting 0/0. A zero-statement result is not a coverage result — §3 of
-  the design document already makes this refusal for the original tool.
-- The selftest runs before the gate in CI, as the other four do.
+### The refusal that matters most (task 11's substance)
 
----
+`covdiff` refuses a baseline that covered nothing. Without it, a `-run` pattern
+matching no test yields a profile of zeroes, the subtraction becomes a no-op, and
+every interface reports its full coverage as robustness-only — "every error path
+is exercised", manufactured by a control that did not run. Reproduced with a real
+`go test -run TestNoSuchTest` before the refusal was written.
+
+Three further refusals: block sets that disagree, modes that disagree, and a
+profile whose records disagree about a block's statement count.
+
+`./covdiff/` mutation 0.635417, floor 0.63. The first run scored 0.604167 and
+found a real gap: `TestExitCodes` passed an `-o` path and never opened the file,
+so the command could exit 0 having written nothing.
 
 ## Group E — the assertions a robustness pass has to make
 
