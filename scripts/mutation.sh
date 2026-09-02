@@ -13,7 +13,8 @@
 # armed point.
 #
 # Usage:
-#   scripts/mutation.sh [--baseline FILE] [--root DIR] [packages...]
+#   scripts/mutation.sh [--baseline FILE] [--root DIR] [--survivors FILE] [packages...]
+#   scripts/mutation.sh --print-keys FILE
 #
 # THE WORKING TREE IS THIS TOOL'S SCRATCH SPACE. go-mutesting rewrites source
 # files IN PLACE, runs the tests, and restores them. So while this script runs,
@@ -33,9 +34,14 @@
 # including an interrupt.
 #
 # Exit codes:
-#   0  every package met its recorded floor
-#   1  a package scored below its floor
-#   2  the run could not produce a number worth reading
+#   0  every package met its recorded floor, and every survivor matched
+#   1  a package scored below its floor, or its escaped mutants did not match
+#      mutation-survivors.tsv as a multiset (an escaped mutant with no row is
+#      a NEW SURVIVOR; a row with no matching escaped mutant is a STALE ROW)
+#   2  the run could not produce a trustworthy number: a missing tool
+#      (go-mutesting, jq, sha256sum), a missing baseline or survivors file,
+#      a report.json that is missing or whose escapedCount does not match
+#      the length of .escaped, or a survivors row with an empty reason
 #
 # On tool choice: gremlins reported nothing for every invocation tried in this
 # module, and works fine in other repositories on the same Go version with the
