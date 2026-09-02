@@ -64,12 +64,25 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASELINE=""
 SURVIVORS=""
 PRINT_KEYS=""
+usage() {
+  echo "mutation: usage: $0 [--root DIR] [--baseline FILE] [--survivors FILE]" >&2
+  echo "mutation:          [--print-keys FILE] [packages...]" >&2
+}
+# Each of these four flags takes a value. Given last, with no value after it,
+# $2 does not exist -- referencing it under `set -u` errors inside the
+# command substitution or assignment, `shift 2` then fails silently because
+# only one positional argument remains, "$1" is never consumed, and the loop
+# spins on the same flag forever. Refuse it here instead.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --root)        ROOT="$(cd "$2" && pwd)"; shift 2 ;;
-    --baseline)    BASELINE="$2"; shift 2 ;;
-    --survivors)   SURVIVORS="$2"; shift 2 ;;
-    --print-keys)  PRINT_KEYS="$2"; shift 2 ;;
+    --root)        [ $# -ge 2 ] || { echo "mutation: --root needs a value" >&2; usage; exit 2; }
+                    ROOT="$(cd "$2" && pwd)"; shift 2 ;;
+    --baseline)    [ $# -ge 2 ] || { echo "mutation: --baseline needs a value" >&2; usage; exit 2; }
+                    BASELINE="$2"; shift 2 ;;
+    --survivors)   [ $# -ge 2 ] || { echo "mutation: --survivors needs a value" >&2; usage; exit 2; }
+                    SURVIVORS="$2"; shift 2 ;;
+    --print-keys)  [ $# -ge 2 ] || { echo "mutation: --print-keys needs a value" >&2; usage; exit 2; }
+                    PRINT_KEYS="$2"; shift 2 ;;
     *)             break ;;
   esac
 done
@@ -80,12 +93,14 @@ done
 #
 # The key is (file, mutator, a hash of the hunk body) -- never the line
 # number, because a line moves when code above it moves and the mutant does
-# not. The hunk body: keep the diff lines that start with '-', '+' or a
-# space, drop the '---'/'+++' header lines (the '@@' line is dropped for
-# free, since it starts with neither), join with newlines, strip leading and
-# trailing whitespace from the whole text. The key's hash is the first 16
-# hex characters of that text's SHA-256. scratchpad/a5-compare.py's `hunk`
-# function is the reference this matches.
+# not. mutant_records below is the reference implementation of the hunk
+# body: keep the diff lines that start with '-', '+' or a space, drop the
+# '---'/'+++' header lines (the '@@' line is dropped for free, since it
+# starts with neither), join with newlines, strip leading and trailing
+# whitespace from the whole text. A line is split on newline only -- a CRLF,
+# a form feed or a U+2028 inside a diff line stays inside that line, and is
+# not itself a line break. The key's hash is the first 16 hex characters of
+# that text's SHA-256.
 #
 # jq's @json, one escaped mutant per line, keeps a diff that contains any
 # character -- including embedded newlines and tabs -- on one line of shell
@@ -93,7 +108,7 @@ done
 # whitespace.
 mutant_records() {
   local report="$1"
-  jq -r '(.escaped // []).[] | [.mutator.originalFilePath, .mutator.mutatorName, .mutator.originalStartLine, .diff] | @json' "$report" |
+  jq -r '(.escaped // [])[] | [.mutator.originalFilePath, .mutator.mutatorName, .mutator.originalStartLine, .diff] | @json' "$report" |
   while IFS= read -r row; do
     local file mutator line diff body hash key hunk_b64
     file="$(printf '%s' "$row" | jq -r '.[0]')"
@@ -293,6 +308,53 @@ if [ ! -f "$SURVIVORS" ]; then
   exit 2
 fi
 
+# The whole survivors file is read and validated ONCE here, against the
+# baseline's own package list, before any package is measured -- not row by
+# row inside the loop below, which only filters this already-validated set
+# down to one package at a time. A row this loop refuses was never read, and
+# a reason of "TODO: read it" is the ready-to-paste row the gate itself
+# prints: a pasted row is not a read row either.
+ALL_ROW_PKG=(); ALL_ROW_KEY=(); ALL_ROW_WHERE=(); ALL_ROW_REASON=()
+while IFS= read -r raw || [ -n "$raw" ]; do
+  case "$raw" in ''|'#'*) continue ;; esac
+  # `read -a` with tab as IFS collapses a trailing empty field -- a row whose
+  # reason is empty would then read as three fields, not four, and be
+  # refused for the wrong reason. awk's -F counts a trailing empty field
+  # correctly, and cut splits on the byte without collapsing anything.
+  field_count="$(awk -F'\t' '{print NF}' <<< "$raw")"
+  if [ "$field_count" -lt 4 ]; then
+    echo "mutation: '$SURVIVORS' has a row with fewer than four fields:" >&2
+    echo "mutation:   $raw" >&2
+    echo "mutation: package, key, where and reason are all required —" >&2
+    echo "mutation: refusing to report a pass." >&2
+    exit 2
+  fi
+  rpkg="$(cut -f1 <<< "$raw")"
+  rkey="$(cut -f2 <<< "$raw")"
+  rwhere="$(cut -f3 <<< "$raw")"
+  rreason="$(cut -f4- <<< "$raw")"
+  if ! printf '%s\n' "$LISTED" | grep -qFx "$(norm "$rpkg")"; then
+    echo "mutation: '$SURVIVORS' has a row for '$rpkg' (key '$rkey'), which is" >&2
+    echo "mutation: not a package in '$BASELINE' — refusing to report a pass." >&2
+    exit 2
+  fi
+  if [ -z "$rreason" ]; then
+    echo "mutation: '$SURVIVORS' has a row for $rpkg (key '$rkey') with an" >&2
+    echo "mutation: empty reason — a survivor with no reason is a survivor" >&2
+    echo "mutation: nobody read. Refusing to report a pass." >&2
+    exit 2
+  fi
+  case "$rreason" in
+    TODO*)
+      echo "mutation: '$SURVIVORS' has a row for $rpkg (key '$rkey') whose" >&2
+      echo "mutation: reason still starts with 'TODO' — a pasted row is not a" >&2
+      echo "mutation: read row. Refusing to report a pass." >&2
+      exit 2
+      ;;
+  esac
+  ALL_ROW_PKG+=("$rpkg"); ALL_ROW_KEY+=("$rkey"); ALL_ROW_WHERE+=("$rwhere"); ALL_ROW_REASON+=("$rreason")
+done < "$SURVIVORS"
+
 FAILED=0
 MEASURED=0
 FAIL_SUMMARY=()
@@ -307,6 +369,10 @@ while IFS=$'\t' read -r pkg floor rest; do
   fi
   MEASURED=$((MEASURED + 1))
 
+  # A package that prints a score but writes no fresh report must be caught
+  # by check_report_trustworthy as missing, not compared against whatever
+  # report.json the previous package in this loop left behind.
+  rm -f "$ROOT/report.json"
   OUT="$(cd "$ROOT" && go-mutesting "$pkg" 2>&1)"
   SCORE="$(printf '%s\n' "$OUT" | sed -n 's/.*mutation score is \([0-9.]*\).*/\1/p' | tail -1)"
   if [ -z "$SCORE" ]; then
@@ -358,20 +424,15 @@ while IFS=$'\t' read -r pkg floor rest; do
     ESCAPED_HUNK_B64+=("$ehunkb64")
   done < <(mutant_records "$REPORT")
 
+  # Rows were already read and validated once, above this loop; this filters
+  # that already-validated set down to the one package in play.
   ROW_KEYS=(); ROW_WHERE=(); ROW_REASON=()
-  while IFS=$'\t' read -r rpkg rkey rwhere rreason; do
-    case "$rpkg" in ''|'#'*) continue ;; esac
-    [ "$(norm "$rpkg")" = "$(norm "$pkg")" ] || continue
-    if [ -z "$rreason" ]; then
-      echo "mutation: '$SURVIVORS' has a row for $pkg (key '$rkey') with an" >&2
-      echo "mutation: empty reason — a survivor with no reason is a survivor" >&2
-      echo "mutation: nobody read. Refusing to report a pass." >&2
-      exit 2
-    fi
-    ROW_KEYS+=("$rkey")
-    ROW_WHERE+=("$rwhere")
-    ROW_REASON+=("$rreason")
-  done < "$SURVIVORS"
+  for ridx2 in "${!ALL_ROW_PKG[@]}"; do
+    [ "$(norm "${ALL_ROW_PKG[$ridx2]}")" = "$(norm "$pkg")" ] || continue
+    ROW_KEYS+=("${ALL_ROW_KEY[$ridx2]}")
+    ROW_WHERE+=("${ALL_ROW_WHERE[$ridx2]}")
+    ROW_REASON+=("${ALL_ROW_REASON[$ridx2]}")
+  done
 
   declare -A KEY_QUEUE=()
   for ridx in "${!ROW_KEYS[@]}"; do
@@ -438,7 +499,7 @@ if [ "$MEASURED" = 0 ]; then
 fi
 
 if [ -n "$WANTED" ]; then
-  echo "mutation: $MEASURED of the baseline's packages met their floor (filtered:$WANTED)"
+  echo "mutation: $MEASURED of the baseline's packages met their floor and survivor list (filtered:$WANTED)"
 else
-  echo "mutation: every package met its floor"
+  echo "mutation: every package met its floor and its survivor list"
 fi
