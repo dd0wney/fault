@@ -516,3 +516,50 @@ func TestTwoCrashPointsKeepIdenticalTreesApart(t *testing.T) {
 		t.Errorf("plan gave\n  %q\nwant\n  %q", got, want)
 	}
 }
+
+// The write before its sync must be losable at the write's own crash point.
+//
+// This is the whole point of the third loop, and no test pinned it at the
+// plan level. A split that reads entries past the crash point sees the sync
+// at 3, marks the file synced, and calls the write at 2 durable -- so the
+// state "after=data:write1/lost=data:write1" is never built, and a store
+// that loses that write on a power cut is never asked to survive it.
+// MEASURED 2026-09-02: with that guard deleted, every test in this package
+// passed. The list is pinned in full so a state that appears is caught as
+// well as one that disappears.
+func TestTheWriteBeforeItsSyncCanBeLost(t *testing.T) {
+	dir := t.TempDir()
+	rec := crash.Record(faultfs.OS(), dir)
+
+	f, err := rec.OpenFile(filepath.Join(dir, "data"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte("v1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := crash.Plan(rec, crash.Model{})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	// At the write's crash point the sync has not run, so the create and the
+	// write are both pending. Losing the create takes the write with it, so
+	// that state and "lost both" rebuild the same empty tree and dedup to one.
+	want := []string{
+		"after=data:create1/lost=data:create1",
+		"after=data:create1/lost=none",
+		"after=data:write1/lost=data:create1",
+		"after=data:write1/lost=data:write1",
+		"after=data:write1/lost=none",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("plan gave\n  %q\nwant\n  %q", got, want)
+	}
+}
