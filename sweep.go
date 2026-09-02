@@ -10,6 +10,11 @@ import (
 // maxOps bounds the walk, so a scenario that performs more work on each pass
 // cannot loop forever. Exceeding it fails the test rather than passing
 // quietly, because a sweep that never reaches its end has proved nothing.
+//
+// MEASURED 2026-09-02: the largest sweep the graphdb harness produces is 52
+// points (its eio/wal+edges scenario), a tenth of this bound, and no sweep
+// there has hit it. A caller cannot raise the bound, by design: a scenario
+// near it is a scenario that should be split, not a bound that should grow.
 const maxOps = 512
 
 // The two ways a sweep can fail to prove anything. Both are failures of the
