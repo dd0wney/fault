@@ -72,7 +72,10 @@ func TestRunKeepsARunWhoseCheckWritesThroughTheGivenFilesystem(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if states == 0 {
-		t.Fatal("no state ran, so this control proved nothing")
+	// inPlace records one write with no sync, one whole unit under
+	// Model{}, so the walk has exactly two states: the one that lost
+	// nothing and the one that lost the write.
+	if states != 2 {
+		t.Fatalf("%d states ran, want 2: the one that lost nothing and the one that lost the write", states)
 	}
 }
