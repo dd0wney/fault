@@ -167,6 +167,22 @@ expect_out 0 "the key of a known diff" \
   "calc.go:branch/if:48430df276c3b853" -- \
   "$GATE" --print-keys "$DATA/thin/report.json"
 
+# go-mutesting writes escaped as JSON null, not [], when nothing escaped --
+# the same way it already writes killed/timeouted/errored. A package with a
+# floor of 1.00 (alloc, fs, sql all carry one) hits this on every green run,
+# so the key pipeline must read null as zero mutants, not fail on it.
+printf '{"stats":{"totalMutantsCount":5,"killedCount":5,"notCoveredCount":0,"escapedCount":0,"errorCount":0,"skippedCount":0,"timeOutCount":0,"msi":1,"mutationCodeCoverage":0,"coveredCodeMsi":0},"escaped":null,"timeouted":null,"killed":null,"errored":null}\n' \
+  > "$TMP/no-escaped-report.json"
+NOESC_OUT="$("$GATE" --print-keys "$TMP/no-escaped-report.json" 2>&1)"
+NOESC_GOT=$?
+if [ "$NOESC_GOT" = 0 ] && [ -z "$NOESC_OUT" ]; then
+  printf '  ok   %-46s exit %s\n' "a report with no escaped mutants at all" "$NOESC_GOT"
+else
+  echo "selftest: a report with no escaped mutants at all — exit $NOESC_GOT, output:" >&2
+  printf '%s\n' "$NOESC_OUT" | sed 's/^/selftest:   /' >&2
+  FAILURES=$((FAILURES + 1))
+fi
+
 printf '# package\tkey\twhere\treason\n./\tcalc.go:branch/if:48430df276c3b853\tcalc.go:5 branch/if\tfixture: matched on purpose\n./\tcalc.go:expression/comparison:64a6ebd00ee15936\tcalc.go:4 expression/comparison\tfixture: matched on purpose\n./\tcalc.go:numbers/decrementer:b8c36547feae51db\tcalc.go:4 numbers/decrementer\tfixture: matched on purpose\n' \
   > "$TMP/surv-missing-one.tsv"
 expect_out 1 "an escaped mutant with no row" \

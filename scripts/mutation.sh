@@ -87,7 +87,7 @@ done
 # whitespace.
 mutant_records() {
   local report="$1"
-  jq -r '.escaped[] | [.mutator.originalFilePath, .mutator.mutatorName, .mutator.originalStartLine, .diff] | @json' "$report" |
+  jq -r '(.escaped // []).[] | [.mutator.originalFilePath, .mutator.mutatorName, .mutator.originalStartLine, .diff] | @json' "$report" |
   while IFS= read -r row; do
     local file mutator line diff body hash key hunk_b64
     file="$(printf '%s' "$row" | jq -r '.[0]')"
