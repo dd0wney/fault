@@ -82,7 +82,11 @@ func TestObservedIsSilentAboutAPathOutsideTheRecordedRoot(t *testing.T) {
 		t.Fatalf("the bypass write: %v", err)
 	}
 
-	if got := rec.Observed(); slices.Contains(got, "around.dat") {
+	got := rec.Observed()
+	if !slices.Contains(got, "through.dat") {
+		t.Fatalf("Observed() = %q, want it to contain the path the recorder did serve", got)
+	}
+	if slices.Contains(got, "around.dat") {
 		t.Errorf("Observed() = %q, want it NOT to contain a path the recorder never served", got)
 	}
 	if _, err := crash.Plan(rec, crash.Model{Sector: 4096}); err != nil {
@@ -110,7 +114,11 @@ func TestObservedIsSilentAboutABypassThatLeavesNoTraceInTheTree(t *testing.T) {
 		t.Fatalf("the bypass remove: %v", err)
 	}
 
-	if got := rec.Observed(); slices.Contains(got, "around.tmp") {
+	got := rec.Observed()
+	if !slices.Contains(got, "through.dat") {
+		t.Fatalf("Observed() = %q, want it to contain the path the recorder did serve", got)
+	}
+	if slices.Contains(got, "around.tmp") {
 		t.Errorf("Observed() = %q, want it NOT to contain a path the recorder never served", got)
 	}
 	if _, err := crash.Plan(rec, crash.Model{Sector: 4096}); err != nil {
