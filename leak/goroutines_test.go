@@ -39,3 +39,14 @@ func TestGoroutinesNamesEachLeakedGoroutine(t *testing.T) {
 		t.Errorf("the failure does not read as a leak report:\n%s", out)
 	}
 }
+
+// TestGoroutinesPassesWhenNothingLeaked calls Goroutines directly, with no
+// re-exec, so a coverage-instrumented run of this package's own test binary
+// can see it. The test above cannot give that coverage: its child runs as a
+// separate, plain re-exec of os.Args[0] with no -test.coverprofile flag, so
+// whatever it alone exercises inside Goroutines is invisible to a coverage
+// profile taken of the parent.
+func TestGoroutinesPassesWhenNothingLeaked(t *testing.T) {
+	snap := goroutine.Take()
+	Goroutines(t, snap, 0)
+}

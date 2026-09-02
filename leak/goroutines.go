@@ -16,5 +16,7 @@ type Delta interface {
 // starts, and the doc says so rather than pretending.
 func Goroutines(t testing.TB, snap Delta, settle time.Duration) {
 	t.Helper()
-	// TODO(leak): not yet implemented.
+	for _, g := range snap.Since(settle) {
+		t.Errorf("leak.Goroutines: still running: %s", g)
+	}
 }
