@@ -190,6 +190,20 @@ expect_out 1 "an escaped mutant with no row" \
   "$GATE" --root "$DATA/thin" --baseline "$TMP/floor-zero.tsv" \
     --survivors "$TMP/surv-missing-one.tsv"
 
+# "Ready-to-paste" means a caller can paste the printed row straight into the
+# survivors file, which requires the row to sit on its own line -- not run
+# together with whatever text the indented hunk dump happened to end on.
+READYROW_OUT="$("$GATE" --root "$DATA/thin" --baseline "$TMP/floor-zero.tsv" \
+  --survivors "$TMP/surv-missing-one.tsv" 2>&1)"
+READYROW_WANT="$(printf 'mutation:   ./\tcalc.go:numbers/incrementer:244ea632f3f1580d\tcalc.go:4 numbers/incrementer\tTODO: read it')"
+if printf '%s\n' "$READYROW_OUT" | grep -qFx "$READYROW_WANT"; then
+  printf '  ok   %-46s exit %s\n' "the ready-to-paste row is on its own line" 0
+else
+  echo "selftest: the ready-to-paste row is on its own line — not found as a clean line" >&2
+  printf '%s\n' "$READYROW_OUT" | sed 's/^/selftest:   /' >&2
+  FAILURES=$((FAILURES + 1))
+fi
+
 printf '# package\tkey\twhere\treason\n./\tcalc.go:branch/if:48430df276c3b853\tcalc.go:5 branch/if\tfixture: matched\n./\tcalc.go:expression/comparison:64a6ebd00ee15936\tcalc.go:4 expression/comparison\tfixture: matched\n./\tcalc.go:numbers/decrementer:b8c36547feae51db\tcalc.go:4 numbers/decrementer\tfixture: matched\n./\tcalc.go:numbers/incrementer:244ea632f3f1580d\tcalc.go:4 numbers/incrementer\tfixture: matched\n./\tcalc.go:bogus/mutator:0000000000000000\tcalc.go:99 bogus/mutator\tfixture: a row with no matching mutant, on purpose\n' \
   > "$TMP/surv-stale-row.tsv"
 expect_out 1 "a row whose key matches no escaped mutant" \

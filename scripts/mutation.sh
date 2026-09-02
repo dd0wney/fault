@@ -388,6 +388,7 @@ while IFS=$'\t' read -r pkg floor rest; do
       echo "mutation: NEW SURVIVOR in $pkg" >&2
       echo "mutation:   ${ESCAPED_FILE[$eidx]}:${ESCAPED_LINE[$eidx]}  ${ESCAPED_MUTATOR[$eidx]}" >&2
       printf '%s' "${ESCAPED_HUNK_B64[$eidx]}" | base64 -d | sed 's/^/mutation:     /' >&2
+      printf '\n' >&2
       where="${ESCAPED_FILE[$eidx]}:${ESCAPED_LINE[$eidx]} ${ESCAPED_MUTATOR[$eidx]}"
       echo "mutation:   $pkg	$ek	$where	TODO: read it" >&2
       PKG_SURV_FAILED=1
