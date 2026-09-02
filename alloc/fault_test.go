@@ -165,8 +165,8 @@ func TestAnUnmatchedFreeDrivesTheCountNegative(t *testing.T) {
 		a := faultalloc.New(p, faultalloc.Go())
 
 		b, err := a.Bytes(8)
-		if err == nil {
-			t.Fatal("expected the first allocation of pass 1 to be refused")
+		if !errors.Is(err, faultalloc.ErrNoMemory) {
+			t.Fatalf("first allocation of pass 1: err = %v, want ErrNoMemory", err)
 		}
 
 		// The deferred-Free-before-the-error-check pattern, which runs on
