@@ -308,7 +308,7 @@ func TestMeasureSkipsABlankLineAndReadsPastIt(t *testing.T) {
 
 func TestMeasureRefusesABlockBeforeTheHeaderEvenWhenOneFollows(t *testing.T) {
 	_, err := measure(strings.NewReader("x.go:10.1,10.5 1 1\nmode: set\ny.go:10.1,10.5 1 1\n"), twoSites())
-	if err == nil || !strings.Contains(err.Error(), "before the") {
+	if err == nil || !strings.Contains(err.Error(), `a coverage block before the "mode:" header`) {
 		t.Fatalf("measure = %v, want the block-before-the-header refusal", err)
 	}
 }

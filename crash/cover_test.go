@@ -3,7 +3,8 @@ package crash
 import (
 	"errors"
 	"fmt"
-	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -12,25 +13,48 @@ import (
 // bit i of mask is set, so the eight subsets come back in this order: {},
 // {1}, {2}, {1,2}, {3}, {1,3}, {2,3}, {1,2,3}. Worked by hand from
 // state.go's Exhaustive branch, not read back from a run.
+//
+// The order matters, because the per-point dedup in run.go keeps the first
+// lost set that rebuilds a given tree, so this order decides which name a
+// state gets.
 func TestExhaustiveVisitsEverySubset(t *testing.T) {
 	u := []unit{{entry: 1}, {entry: 2}, {entry: 3}}
 	got, err := subsets(u, Exhaustive)
 	if err != nil {
 		t.Fatalf("subsets: %v", err)
 	}
-	want := [][]unit{
-		nil,
-		{{entry: 1}},
-		{{entry: 2}},
-		{{entry: 1}, {entry: 2}},
-		{{entry: 3}},
-		{{entry: 1}, {entry: 3}},
-		{{entry: 2}, {entry: 3}},
-		{{entry: 1}, {entry: 2}, {entry: 3}},
+	// entriesOf renders each lost set by the entries it holds, not by
+	// reflect.DeepEqual, which would pin a nil first element: a correct
+	// subsets that returned an empty non-nil slice for mask 0 must still
+	// pass.
+	want := []string{
+		"",
+		"1",
+		"2",
+		"1,2",
+		"3",
+		"1,3",
+		"2,3",
+		"1,2,3",
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("subsets =\n  %v\nwant\n  %v", got, want)
+	gotEntries := make([]string, len(got))
+	for i, s := range got {
+		gotEntries[i] = entriesOf(s)
 	}
+	if !slices.Equal(gotEntries, want) {
+		t.Errorf("subsets =\n  %v\nwant\n  %v", gotEntries, want)
+	}
+}
+
+// entriesOf renders a lost set as its entry numbers, comma-separated, so a
+// test can compare sets by the entries they hold, for example "1,2", and ""
+// for an empty set.
+func entriesOf(u []unit) string {
+	parts := make([]string, len(u))
+	for i, x := range u {
+		parts[i] = strconv.Itoa(x.entry)
+	}
+	return strings.Join(parts, ",")
 }
 
 func TestPrefixesVisitsOnePerBoundary(t *testing.T) {
