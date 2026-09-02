@@ -104,6 +104,9 @@ func TestParseTakesTheFirstCreator(t *testing.T) {
 	if !ok {
 		t.Fatal("parse rejected the block")
 	}
+	if !strings.Contains(desc, "main.first") {
+		t.Errorf("desc = %q, want it to name the first creator, main.first", desc)
+	}
 	if strings.Contains(desc, "main.second") {
 		t.Errorf("desc = %q, want the first creator only", desc)
 	}
