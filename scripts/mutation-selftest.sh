@@ -155,6 +155,14 @@ expect 0 "a package argument excludes the other rows" \
 #
 # for the first escaped entry: calc.go, branch/if. The literal below is that
 # run's output, not a formula the test re-derives.
+#
+# report.json is untracked (already matched by the repository's own
+# .gitignore) and is not regenerated here. It reads whichever copy the
+# earlier thin cases above just wrote, since every one of them runs
+# go-mutesting for real against the same calc.go and calc_test.go and so
+# leaves an identical report.json behind -- go-mutesting's output is
+# deterministic for one source tree. If this case ever moves above all of
+# them, give it its own real run first.
 expect_out 0 "the key of a known diff" \
   "calc.go:branch/if:48430df276c3b853" -- \
   "$GATE" --print-keys "$DATA/thin/report.json"

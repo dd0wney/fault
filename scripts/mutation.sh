@@ -56,14 +56,100 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BASELINE=""
+SURVIVORS=""
+PRINT_KEYS=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --root)     ROOT="$(cd "$2" && pwd)"; shift 2 ;;
-    --baseline) BASELINE="$2"; shift 2 ;;
-    *)          break ;;
+    --root)        ROOT="$(cd "$2" && pwd)"; shift 2 ;;
+    --baseline)    BASELINE="$2"; shift 2 ;;
+    --survivors)   SURVIVORS="$2"; shift 2 ;;
+    --print-keys)  PRINT_KEYS="$2"; shift 2 ;;
+    *)             break ;;
   esac
 done
 [ -n "$BASELINE" ] || BASELINE="$ROOT/scripts/mutation-baseline.tsv"
+[ -n "$SURVIVORS" ] || SURVIVORS="$(dirname "$BASELINE")/mutation-survivors.tsv"
+
+# --- a mutant's identity, and the report it is read from --------------------
+#
+# The key is (file, mutator, a hash of the hunk body) -- never the line
+# number, because a line moves when code above it moves and the mutant does
+# not. The hunk body: keep the diff lines that start with '-', '+' or a
+# space, drop the '---'/'+++' header lines (the '@@' line is dropped for
+# free, since it starts with neither), join with newlines, strip leading and
+# trailing whitespace from the whole text. The key's hash is the first 16
+# hex characters of that text's SHA-256. scratchpad/a5-compare.py's `hunk`
+# function is the reference this matches.
+#
+# jq's @json, one escaped mutant per line, keeps a diff that contains any
+# character -- including embedded newlines and tabs -- on one line of shell
+# output, so it can be read back with `jq -r` per field instead of split on
+# whitespace.
+mutant_records() {
+  local report="$1"
+  jq -r '.escaped[] | [.mutator.originalFilePath, .mutator.mutatorName, .mutator.originalStartLine, .diff] | @json' "$report" |
+  while IFS= read -r row; do
+    local file mutator line diff body hash key hunk_b64
+    file="$(printf '%s' "$row" | jq -r '.[0]')"
+    mutator="$(printf '%s' "$row" | jq -r '.[1]')"
+    line="$(printf '%s' "$row" | jq -r '.[2]')"
+    diff="$(printf '%s' "$row" | jq -r '.[3]')"
+    body="$(printf '%s\n' "$diff" | awk '
+      /^---/ { next }
+      /^\+\+\+/ { next }
+      /^[-+ ]/ { print }
+    ')"
+    body="${body#"${body%%[![:space:]]*}"}"
+    body="${body%"${body##*[![:space:]]}"}"
+    hash="$(printf '%s' "$body" | sha256sum | cut -c1-16)"
+    key="${file}:${mutator}:${hash}"
+    hunk_b64="$(printf '%s' "$body" | base64 -w0)"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$key" "$file" "$line" "$mutator" "$hunk_b64"
+  done
+}
+
+# A report.json this script did not just verify is not evidence about
+# anything. escapedCount is go-mutesting's own claim about how many mutants
+# escaped; .escaped is the list it printed. If they disagree, or the file is
+# not there, neither the score already read nor any key computed from it can
+# be trusted.
+check_report_trustworthy() {
+  local report="$1"
+  if [ ! -f "$report" ]; then
+    echo "mutation: '$report' is missing — the report cannot be trusted" >&2
+    return 1
+  fi
+  local escaped_count escaped_len
+  escaped_count="$(jq -r '.stats.escapedCount // 0' "$report" 2>/dev/null)"
+  escaped_len="$(jq -r '(.escaped // []) | length' "$report" 2>/dev/null)"
+  if [ -z "$escaped_count" ] || [ -z "$escaped_len" ] || [ "$escaped_count" != "$escaped_len" ]; then
+    echo "mutation: '$report' says escapedCount=${escaped_count:-?} but .escaped has" >&2
+    echo "mutation: ${escaped_len:-?} entries — the report cannot be trusted" >&2
+    return 1
+  fi
+  return 0
+}
+
+# --print-keys FILE: read an already-captured report.json directly (no run,
+# no baseline, no working tree involved) and print each escaped mutant's key
+# and where (file:line mutator), tab-separated, one per line. Used to build
+# survivors rows from a report captured elsewhere, and by the selftest to
+# assert the key of a known diff.
+if [ -n "$PRINT_KEYS" ]; then
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "mutation: jq is not installed — refusing to compute keys" >&2
+    exit 2
+  fi
+  if ! command -v sha256sum >/dev/null 2>&1; then
+    echo "mutation: sha256sum is not installed — refusing to compute keys" >&2
+    exit 2
+  fi
+  check_report_trustworthy "$PRINT_KEYS" || exit 2
+  while IFS=$'\t' read -r key efile eline emutator _; do
+    printf '%s\t%s:%s %s\n' "$key" "$efile" "$eline" "$emutator"
+  done < <(mutant_records "$PRINT_KEYS")
+  exit 0
+fi
 
 # --- the working-tree guard -------------------------------------------------
 
@@ -112,6 +198,16 @@ fi
 if ! command -v go-mutesting >/dev/null 2>&1; then
   echo "mutation: go-mutesting is not installed — refusing to report a pass" >&2
   echo "mutation: go install github.com/avito-tech/go-mutesting/cmd/go-mutesting@latest" >&2
+  exit 2
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "mutation: jq is not installed — refusing to report a pass" >&2
+  echo "mutation: the survivor-list check reads report.json with jq" >&2
+  exit 2
+fi
+if ! command -v sha256sum >/dev/null 2>&1; then
+  echo "mutation: sha256sum is not installed — refusing to report a pass" >&2
+  echo "mutation: the survivor-list check hashes each hunk with sha256sum" >&2
   exit 2
 fi
 if [ ! -s "$BASELINE" ]; then
@@ -182,8 +278,18 @@ if [ $# -gt 0 ]; then
   done
 fi
 
+# A list file that was not read cannot be vouched for, the same refusal the
+# baseline gets above. One file covers every package this baseline lists, so
+# this is checked once, not per package.
+if [ ! -f "$SURVIVORS" ]; then
+  echo "mutation: '$SURVIVORS' is missing — refusing to report a pass" >&2
+  echo "mutation: a list file that was not read cannot be vouched for." >&2
+  exit 2
+fi
+
 FAILED=0
 MEASURED=0
+FAIL_SUMMARY=()
 while IFS=$'\t' read -r pkg floor rest; do
   case "$pkg" in ''|'#'*) continue ;; esac
   [ -n "${floor:-}" ] || continue
@@ -225,15 +331,95 @@ while IFS=$'\t' read -r pkg floor rest; do
   if awk -v s="$SCORE" -v f="$floor" 'BEGIN { exit !(s + 1e-9 < f) }'; then
     printf '  %-12s %s  BELOW the recorded floor of %s\n' "$pkg" "$SCORE" "$floor"
     FAILED=1
+    FAIL_SUMMARY+=("$pkg  scored $SCORE, below the recorded floor of $floor")
   else
     printf '  %-12s %s  (floor %s)\n' "$pkg" "$SCORE" "$floor"
+  fi
+
+  # The survivor list: does the recorded identity of every known survivor
+  # match, as a multiset, the identity of every mutant this run's report says
+  # escaped? Two escaped mutants can share a key when two places in one file
+  # have the same code and context, so counts matter and not just membership.
+  REPORT="$ROOT/report.json"
+  check_report_trustworthy "$REPORT" || exit 2
+
+  ESCAPED_KEYS=(); ESCAPED_FILE=(); ESCAPED_LINE=(); ESCAPED_MUTATOR=(); ESCAPED_HUNK_B64=()
+  while IFS=$'\t' read -r ekey efile eline emutator ehunkb64; do
+    ESCAPED_KEYS+=("$ekey")
+    ESCAPED_FILE+=("$efile")
+    ESCAPED_LINE+=("$eline")
+    ESCAPED_MUTATOR+=("$emutator")
+    ESCAPED_HUNK_B64+=("$ehunkb64")
+  done < <(mutant_records "$REPORT")
+
+  ROW_KEYS=(); ROW_WHERE=(); ROW_REASON=()
+  while IFS=$'\t' read -r rpkg rkey rwhere rreason; do
+    case "$rpkg" in ''|'#'*) continue ;; esac
+    [ "$(norm "$rpkg")" = "$(norm "$pkg")" ] || continue
+    if [ -z "$rreason" ]; then
+      echo "mutation: '$SURVIVORS' has a row for $pkg (key '$rkey') with an" >&2
+      echo "mutation: empty reason — a survivor with no reason is a survivor" >&2
+      echo "mutation: nobody read. Refusing to report a pass." >&2
+      exit 2
+    fi
+    ROW_KEYS+=("$rkey")
+    ROW_WHERE+=("$rwhere")
+    ROW_REASON+=("$rreason")
+  done < "$SURVIVORS"
+
+  declare -A KEY_QUEUE=()
+  for ridx in "${!ROW_KEYS[@]}"; do
+    rk="${ROW_KEYS[$ridx]}"
+    KEY_QUEUE["$rk"]="${KEY_QUEUE[$rk]:-}${KEY_QUEUE[$rk]:+ }$ridx"
+  done
+  CONSUMED=()
+  for ridx in "${!ROW_KEYS[@]}"; do CONSUMED[$ridx]=0; done
+
+  PKG_SURV_FAILED=0
+  for eidx in "${!ESCAPED_KEYS[@]}"; do
+    ek="${ESCAPED_KEYS[$eidx]}"
+    queue="${KEY_QUEUE[$ek]:-}"
+    if [ -n "$queue" ]; then
+      match="${queue%% *}"
+      if [ "$match" = "$queue" ]; then qrest=""; else qrest="${queue#* }"; fi
+      KEY_QUEUE["$ek"]="$qrest"
+      CONSUMED[$match]=1
+    else
+      echo "mutation: NEW SURVIVOR in $pkg" >&2
+      echo "mutation:   ${ESCAPED_FILE[$eidx]}:${ESCAPED_LINE[$eidx]}  ${ESCAPED_MUTATOR[$eidx]}" >&2
+      printf '%s' "${ESCAPED_HUNK_B64[$eidx]}" | base64 -d | sed 's/^/mutation:     /' >&2
+      where="${ESCAPED_FILE[$eidx]}:${ESCAPED_LINE[$eidx]} ${ESCAPED_MUTATOR[$eidx]}"
+      echo "mutation:   $pkg	$ek	$where	TODO: read it" >&2
+      PKG_SURV_FAILED=1
+    fi
+  done
+
+  for ridx in "${!ROW_KEYS[@]}"; do
+    if [ "${CONSUMED[$ridx]:-0}" = 0 ]; then
+      echo "mutation: STALE ROW in $pkg" >&2
+      echo "mutation:   ${ROW_KEYS[$ridx]}  ${ROW_WHERE[$ridx]}" >&2
+      echo "mutation:   a test now kills it; remove the row or say what changed" >&2
+      PKG_SURV_FAILED=1
+    fi
+  done
+  unset KEY_QUEUE
+
+  if [ "$PKG_SURV_FAILED" = 1 ]; then
+    FAILED=1
+    FAIL_SUMMARY+=("$pkg  the survivor list does not match the escaped mutants — see NEW SURVIVOR / STALE ROW above")
   fi
 done < "$BASELINE"
 
 [ "$FAILED" = 0 ] || {
   echo >&2
-  echo "mutation: a package scored below its floor. Either a test was weakened," >&2
-  echo "mutation: or new code arrived without assertions. Look at what survived." >&2
+  echo "mutation: at least one package failed. A low score means a weakened" >&2
+  echo "mutation: test or new code without assertions. A survivor mismatch" >&2
+  echo "mutation: means the recorded list drifted from what this run found." >&2
+  echo "mutation:" >&2
+  echo "mutation: packages that failed, and why:" >&2
+  for line in "${FAIL_SUMMARY[@]}"; do
+    echo "mutation:   $line" >&2
+  done
   exit 1
 }
 # A run that measured nothing must not report a pass. The filter is validated
