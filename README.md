@@ -175,7 +175,7 @@ package away.
 ## Development
 
 ```
-go test ./...                          # 331 tests, counted with go test -list on 2026-09-02
+go test ./...                          # 333 tests, counted with go test -list on 2026-09-02
 ./scripts/mutation-selftest.sh         # prove the mutation gate can fail
 ./scripts/mutation.sh                  # then run it
 ./scripts/no-external-deps.sh          # standard library only
