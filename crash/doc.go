@@ -79,8 +79,16 @@
 //
 // A write is recorded at the handle's offset, and the recorder tracks that
 // offset itself. [github.com/dd0wney/fault/fs.File] is Read, Write, Sync,
-// Truncate and Close, with no Seek and no WriteAt, so the offset moves only by
-// the bytes the handle's own reads and writes carry and addition is enough.
+// Truncate and Close, so the offset moves by the bytes the handle's own
+// sequential reads and writes carry. The three optional methods the fault
+// adapter offers -- Seek, WriteAt and ReadAt -- are offered here too when the
+// base has them, and refused with errors.ErrUnsupported when it does not. A
+// Seek sets the offset to the base's own answer. WriteAt records the offset
+// the caller gave, and ReadAt reads at the offset the caller gave, and neither
+// moves the position. So the rule is: the last seek result, plus the bytes
+// moved by sequential reads and writes since. A test reads the optional set
+// from a live handle and requires it to equal the adapter's, so the two cannot
+// drift apart.
 //
 // A handle opened with os.O_APPEND starts at the size the file already holds,
 // not at zero, because every write on it lands at the current end of the file.
@@ -88,13 +96,10 @@
 // takes no index, in the same way it asks whether the handle is a directory. A
 // size the base will not give is a refusal rather than a guess.
 //
-// Two things are outside that rule, and both are refused rather than modelled.
-// A base that offers Seek or WriteAt through a wider interface is one: the
-// recorder never calls either, so a caller that type-asserts for them reaches
-// past this package. Two handles appending to one file concurrently are the
-// other: each tracks its own offset by addition, and the kernel decides the
-// real one. The whole-record control is what catches either, because the replay
-// stops matching the directory the scenario wrote.
+// One thing is outside that rule and is not modelled: two handles appending
+// to one file concurrently. Each tracks its own offset by addition, and the
+// kernel decides the real one. The whole-record control is what catches it,
+// because the replay stops matching the directory the scenario wrote.
 //
 // # Record once, replay many
 //

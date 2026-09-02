@@ -536,6 +536,29 @@ func (f *file) WriteAt(b []byte, off int64) (int, error) {
 	return n, err
 }
 
+// ReadAt takes an index and records no state change, because it changes none.
+// It reads at the offset the CALLER gave and never touches the handle
+// position, so the offset rule stays "the last seek result, plus the bytes
+// moved by sequential reads and writes since". A ReadAt that moved the
+// position would put the next sequential write at the wrong offset in the
+// record, and the whole-record control would then fail for a reason that
+// reads like the store's fault.
+func (f *file) ReadAt(b []byte, off int64) (int, error) {
+	r, ok := f.base.(interface {
+		ReadAt(p []byte, off int64) (int, error)
+	})
+	if !ok {
+		return 0, f.unsupported("readat")
+	}
+
+	f.r.mu.Lock()
+	defer f.r.mu.Unlock()
+
+	n, err := r.ReadAt(b, off)
+	f.r.add(entry{k: kRead, path: f.path})
+	return n, err
+}
+
 func (f *file) Sync() error {
 	f.r.mu.Lock()
 	defer f.r.mu.Unlock()

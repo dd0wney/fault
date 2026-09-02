@@ -5,6 +5,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"sort"
 	"syscall"
 	"testing"
 
@@ -20,6 +23,92 @@ type seeker interface {
 
 type writerAt interface {
 	WriteAt(p []byte, off int64) (int, error)
+}
+
+type readerAt interface {
+	ReadAt(p []byte, off int64) (int, error)
+}
+
+// optionalMethodsOf is THE AUTHORITY for the optional method set: the methods
+// the wrapper's file offers beyond fs.File, read from a live handle by
+// reflection rather than written down. Every table in this package that names
+// an optional method is compared against it, so a method added to the wrapper
+// and to no table is caught, and so is a table row for a method that is gone.
+//
+// This replaced a hand-written list, which is the shape fs/contract_test.go
+// exists to remove: a list a person maintains is a claim with the same expiry
+// as any other. crash/contract_test.go computes the same set from the
+// recorder's handle and requires the two to be equal.
+func optionalMethodsOf(t *testing.T, f faultfs.File) []string {
+	t.Helper()
+	iface := reflect.TypeOf((*faultfs.File)(nil)).Elem()
+	concrete := reflect.TypeOf(f)
+	var out []string
+	for i := range concrete.NumMethod() {
+		name := concrete.Method(i).Name
+		if _, isMember := iface.MethodByName(name); !isMember {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	if len(out) == 0 {
+		t.Fatal("the wrapper's file offers no method beyond fs.File, so every check of the optional set compares nothing")
+	}
+	return out
+}
+
+// optionalOp is one optional method driven as a fault point.
+type optionalOp struct {
+	name string
+	call func(faultfs.File) error
+}
+
+// optionalOps is package-level so TestTheOptionalTableIsTheWrapperOptionalSet
+// can compare it against the authority above.
+var optionalOps = []optionalOp{
+	{"Seek", func(f faultfs.File) error {
+		s, ok := f.(seeker)
+		if !ok {
+			return errNoCapability
+		}
+		_, err := s.Seek(0, io.SeekStart)
+		return err
+	}},
+	{"WriteAt", func(f faultfs.File) error {
+		w, ok := f.(writerAt)
+		if !ok {
+			return errNoCapability
+		}
+		_, err := w.WriteAt([]byte("x"), 0)
+		return err
+	}},
+	{"ReadAt", func(f faultfs.File) error {
+		r, ok := f.(readerAt)
+		if !ok {
+			return errNoCapability
+		}
+		_, err := r.ReadAt(make([]byte, 1), 0)
+		return err
+	}},
+}
+
+// The table above and the wrapper must agree exactly, in both directions.
+func TestTheOptionalTableIsTheWrapperOptionalSet(t *testing.T) {
+	dir := t.TempDir()
+	fsys := faultfs.New(&fault.Points{}, faultfs.OS())
+	f := openThrough(t, fsys, dir)
+
+	want := optionalMethodsOf(t, f)
+	var got []string
+	for _, op := range optionalOps {
+		got = append(got, op.name)
+	}
+	sort.Strings(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("the optional table drives %v and the wrapper offers %v beyond fs.File. "+
+			"A method in one and not the other is either a fault point no test drives "+
+			"or a table row for a method that is gone", got, want)
+	}
 }
 
 // A base that cannot do positional I/O. os.File can, so a test needs one that
@@ -65,7 +154,7 @@ func openThrough(t *testing.T, fsys faultfs.FS, dir string) faultfs.File {
 }
 
 // The wrapper offers the capability when the base has it. os.File does.
-func TestTheWrapperOffersSeekAndWriteAtOverARealFile(t *testing.T) {
+func TestTheWrapperOffersTheOptionalMethodsOverARealFile(t *testing.T) {
 	dir := t.TempDir()
 	fsys := faultfs.New(&fault.Points{}, faultfs.OS())
 	f := openThrough(t, fsys, dir)
@@ -75,6 +164,9 @@ func TestTheWrapperOffersSeekAndWriteAtOverARealFile(t *testing.T) {
 	}
 	if _, ok := f.(writerAt); !ok {
 		t.Error("the wrapped file does not offer WriteAt, so a caller cannot reach it over an os.File")
+	}
+	if _, ok := f.(readerAt); !ok {
+		t.Error("the wrapped file does not offer ReadAt, so a caller cannot reach it over an os.File")
 	}
 }
 
@@ -115,32 +207,24 @@ func TestARefusalSatisfiesTheStandardUnsupportedSentinel(t *testing.T) {
 	if n != 0 {
 		t.Errorf("a refused WriteAt reported %d bytes written, want 0", n)
 	}
+
+	r, ok := f.(readerAt)
+	if !ok {
+		t.Fatal("the wrapper must always OFFER ReadAt")
+	}
+	n, err = r.ReadAt(make([]byte, 1), 0)
+	if !errors.Is(err, errors.ErrUnsupported) {
+		t.Errorf("ReadAt error does not satisfy errors.Is(err, errors.ErrUnsupported): %v", err)
+	}
+	if n != 0 {
+		t.Errorf("a refused ReadAt reported %d bytes read, want 0", n)
+	}
 }
 
-// Both are fault points. An operation the sweep cannot fail is a silent hole
-// in the injection, which the adapter contract forbids.
-func TestSeekAndWriteAtAreFaultPoints(t *testing.T) {
-	for _, c := range []struct {
-		name string
-		call func(faultfs.File) error
-	}{
-		{"Seek", func(f faultfs.File) error {
-			s, ok := f.(seeker)
-			if !ok {
-				return errNoCapability
-			}
-			_, err := s.Seek(0, io.SeekStart)
-			return err
-		}},
-		{"WriteAt", func(f faultfs.File) error {
-			w, ok := f.(writerAt)
-			if !ok {
-				return errNoCapability
-			}
-			_, err := w.WriteAt([]byte("x"), 0)
-			return err
-		}},
-	} {
+// Every optional method is a fault point. An operation the sweep cannot fail
+// is a silent hole in the injection, which the adapter contract forbids.
+func TestTheOptionalMethodsAreFaultPoints(t *testing.T) {
+	for _, c := range optionalOps {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
 			var tripped bool
@@ -223,9 +307,9 @@ func TestAShortWriteAtMovesHalfTheBufferAtTheOffset(t *testing.T) {
 // that trusts the count from a failed positional write writes past bytes that
 // never landed, and this package exists to catch exactly that class of
 // mistake in ITS callers -- so it must not commit it itself.
-func TestAnInjectedSeekOrWriteAtReportsZero(t *testing.T) {
+func TestAnInjectedOptionalMethodReportsZero(t *testing.T) {
 	dir := t.TempDir()
-	var sawSeek, sawWriteAt bool
+	var sawSeek, sawWriteAt, sawReadAt bool
 
 	for n, p := range fault.Sweep(t) {
 		fsys := faultfs.New(p, faultfs.OS())
@@ -256,6 +340,17 @@ func TestAnInjectedSeekOrWriteAtReportsZero(t *testing.T) {
 				t.Errorf("op %d: an injected WriteAt reported %d bytes, want 0", n, got)
 			}
 		}
+		r, ok := f.(readerAt)
+		if !ok {
+			_ = f.Close()
+			t.Fatalf("op %d: the wrapped file does not offer the readerAt interface", n)
+		}
+		if got, err := r.ReadAt(make([]byte, 3), 0); errors.Is(err, syscall.EIO) {
+			sawReadAt = true
+			if got != 0 {
+				t.Errorf("op %d: an injected ReadAt reported %d bytes, want 0", n, got)
+			}
+		}
 		_ = f.Close()
 	}
 
@@ -264,6 +359,48 @@ func TestAnInjectedSeekOrWriteAtReportsZero(t *testing.T) {
 	}
 	if !sawWriteAt {
 		t.Error("no pass injected a WriteAt failure, so its count is untested")
+	}
+	if !sawReadAt {
+		t.Error("no pass injected a ReadAt failure, so its count is untested")
+	}
+}
+
+// The pass-through path must read at the offset, report what it read, and
+// leave the handle position where it was. A store that reads a page at an
+// absolute offset and then appends depends on all three.
+func TestAnUninjectedReadAtReadsAndDoesNotMoveThePosition(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "a")
+	if err := os.WriteFile(name, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fsys := faultfs.New(&fault.Points{}, faultfs.OS())
+	f, err := fsys.OpenFile(name, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	r, ok := f.(readerAt)
+	if !ok {
+		t.Fatal("the wrapper does not offer the readerAt interface")
+	}
+	buf := make([]byte, 2)
+	got, err := r.ReadAt(buf, 4)
+	if err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	if got != 2 || string(buf) != "45" {
+		t.Errorf("ReadAt read %d bytes %q, want 2 bytes %q", got, buf, "45")
+	}
+
+	// The position is untouched: a sequential read after it starts at 0.
+	seq := make([]byte, 2)
+	if _, err := f.Read(seq); err != nil {
+		t.Fatalf("Read after ReadAt: %v", err)
+	}
+	if string(seq) != "01" {
+		t.Errorf("the read after a ReadAt returned %q, want %q — ReadAt moved the position", seq, "01")
 	}
 }
 

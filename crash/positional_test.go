@@ -20,6 +20,57 @@ type writerAt interface {
 	WriteAt(p []byte, off int64) (int, error)
 }
 
+type readerAt interface {
+	ReadAt(p []byte, off int64) (int, error)
+}
+
+// A ReadAt takes an index and does not move the handle position, so the next
+// sequential write is recorded where it lands. The two halves are one test
+// because a ReadAt that moved the position would put a later write at the
+// wrong offset in the record, and the replay control would then disagree
+// with the disk for a reason that reads like the store's fault.
+func TestAReadAtTakesAnIndexAndDoesNotMoveThePosition(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "a")
+	if err := os.WriteFile(name, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := crash.Record(faultfs.OS(), dir)
+	f, err := rec.OpenFile(name, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := f.(readerAt)
+	if !ok {
+		t.Fatal("the recorder does not offer ReadAt over an os.File")
+	}
+	before := len(crash.Entries(rec))
+	buf := make([]byte, 2)
+	if n, err := r.ReadAt(buf, 4); err != nil || n != 2 || string(buf) != "45" {
+		t.Fatalf("ReadAt = %d, %q, %v; want 2, %q, nil", n, buf, err, "45")
+	}
+	if got := len(crash.Entries(rec)); got != before+1 {
+		t.Errorf("ReadAt recorded %d entries, want 1, so every later index shifts", got-before)
+	}
+	if _, err := f.Write([]byte("XY")); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var offs []int64
+	for _, e := range crash.Entries(rec) {
+		if e.Kind == "write" {
+			offs = append(offs, e.Off)
+		}
+	}
+	if len(offs) != 1 || offs[0] != 0 {
+		t.Errorf("the write after a ReadAt is recorded at %v, want [0] — ReadAt must not move the position", offs)
+	}
+}
+
 // A seek moves the position, so the NEXT write is recorded where it actually
 // landed. Spec §5.2 argued that tracking the offset by addition was sound
 // only because fs.File had no Seek. It now has one optionally, and the rule
@@ -208,6 +259,18 @@ func TestARefusedSeekOrWriteAtReportsZeroBytes(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("a refused WriteAt reports %d bytes, want 0", n)
+	}
+
+	r, ok := f.(readerAt)
+	if !ok {
+		t.Fatal("the recorder offers no ReadAt, so its refusal cannot be reached")
+	}
+	n, err = r.ReadAt(make([]byte, 2), 0)
+	if !errors.Is(err, errors.ErrUnsupported) {
+		t.Errorf("a refused ReadAt gives %v, want an error wrapping errors.ErrUnsupported", err)
+	}
+	if n != 0 {
+		t.Errorf("a refused ReadAt reports %d bytes, want 0", n)
 	}
 }
 

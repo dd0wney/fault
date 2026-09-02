@@ -91,6 +91,13 @@ func TestAZeroPointsFailsNothing(t *testing.T) {
 			if _, err := r.Read(make([]byte, 4)); err != nil {
 				t.Errorf("Read: %v", err)
 			}
+			if ra, ok := r.(interface {
+				ReadAt([]byte, int64) (int, error)
+			}); !ok {
+				t.Error("the wrapper does not offer ReadAt over an os.File")
+			} else if _, err := ra.ReadAt(make([]byte, 2), 0); err != nil {
+				t.Errorf("ReadAt: %v", err)
+			}
 			if err := r.Close(); err != nil {
 				t.Errorf("Close after reading: %v", err)
 			}
