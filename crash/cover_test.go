@@ -3,18 +3,33 @@ package crash
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
 
+// subsets walks mask 0 through 7 in binary order and marks unit i LOST when
+// bit i of mask is set, so the eight subsets come back in this order: {},
+// {1}, {2}, {1,2}, {3}, {1,3}, {2,3}, {1,2,3}. Worked by hand from
+// state.go's Exhaustive branch, not read back from a run.
 func TestExhaustiveVisitsEverySubset(t *testing.T) {
 	u := []unit{{entry: 1}, {entry: 2}, {entry: 3}}
 	got, err := subsets(u, Exhaustive)
 	if err != nil {
 		t.Fatalf("subsets: %v", err)
 	}
-	if len(got) != 8 {
-		t.Errorf("got %d subsets, want 8 = 2^3", len(got))
+	want := [][]unit{
+		nil,
+		{{entry: 1}},
+		{{entry: 2}},
+		{{entry: 1}, {entry: 2}},
+		{{entry: 3}},
+		{{entry: 1}, {entry: 3}},
+		{{entry: 2}, {entry: 3}},
+		{{entry: 1}, {entry: 2}, {entry: 3}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("subsets =\n  %v\nwant\n  %v", got, want)
 	}
 }
 
