@@ -1,5 +1,11 @@
 # fault/crash Implementation Plan
 
+> **Status, recorded 2026-09-02:** every task below shipped, the last of them
+> in `e2c36d0`, and the package has run in CI since 2026-08-30. The checkboxes
+> were never marked, so a reader who trusts only them would call this plan
+> open. It is not. The record of what the package still does not do is in
+> `crash/doc.go` under "Limitations", not here.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build `github.com/dd0wney/fault/crash`, which reopens a store's on-disk state as though the process had died at each point, so a test can find durability defects that a returned-error sweep cannot reach.

@@ -57,6 +57,47 @@ That is the claim, and it is narrow on purpose. This is not a Go CERT — it hol
 no rules and covers three of several hundred. It is the apparatus that tests a
 few of them.
 
+The same narrow claim holds against Holzmann's *Power of Ten* (IEEE Computer,
+2006). Rule 7, check the return value of every non-void function, is what a
+sweep tests at run time: the pass that fails call N catches the caller that
+ignores call N, and no other pass does. Rule 2, give every loop a fixed upper
+bound, is what `maxOps` and `maxStates` are inside this library, and the
+sweep's own termination is the same idea applied to the code under test. Rule
+5, two assertions per function, is the loop body: a pass owes three — the
+operation failed, nothing leaked, the state is valid. Rule 10, use analyzers,
+is the checker this section says a sweep is not. Rule 3, no allocation after
+initialisation, names the condition `fault/alloc` tests the response to.
+
+## What the evidence does not establish
+
+Stated here, where a reader arrives with the question, and not only in the
+package documentation.
+
+**A clean sweep proves the error paths the scenario can reach, and nothing
+about the paths it cannot.** A store that reaches the filesystem through the
+`os` package at one call site performs an operation no adapter sees, and the
+sweep walks past it. `fault/crash` voids a run whose check changes the
+recorded root, which catches a write that escaped the seam; a read that
+escaped stays invisible. Grep the code under test for direct `os.` calls before
+trusting a sweep of it.
+
+**`fault/crash` rebuilds an approximation with a name, not the set of states a
+real power cut produces.** The model is stated in `go doc
+github.com/dd0wney/fault/crash`, and a store that survives every state it
+builds may still fail on a device that reorders differently.
+
+**Coupling coverage is what `go tool coupling` measures, and it is not the
+whole of structural coverage.** It measures control coupling directly and data
+coupling by proxy, and it measures neither modified condition/decision coverage
+nor anything else DO-178C 6.4.4.c asks for at the highest assurance level. See
+[docs/coupling-workflow.md](docs/coupling-workflow.md) for what it does and
+does not measure.
+
+**None of this is certification evidence.** No qualified Go compiler exists, so
+Go software does not achieve the higher design assurance levels, and this
+repository must never be described as though it produced evidence for one. It
+implements measures, which transfer where the certification does not.
+
 ## Compared with
 
 | | How it works |
@@ -125,7 +166,7 @@ package away.
 ## Development
 
 ```
-go test ./...                          # 198 tests
+go test ./...                          # 287 tests, counted with go test -list on 2026-09-02
 ./scripts/mutation-selftest.sh         # prove the mutation gate can fail
 ./scripts/mutation.sh                  # then run it
 ./scripts/no-external-deps.sh          # standard library only
