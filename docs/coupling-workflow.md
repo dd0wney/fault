@@ -25,6 +25,15 @@ It also measures control coupling directly and data coupling **by proxy**: a
 registry row names a symbol, and a data couple is often a single field read. The
 tool's own output header says so on every run.
 
+And it is one structural measure, not the set. DO-178C 6.4.4 asks for statement
+coverage, decision coverage, modified condition/decision coverage (MC/DC, at
+DAL A, objective 6.4.4.c), and data- and control-coupling coverage (6.4.4.d).
+This tool measures the last. Go's `-covermode` counts statements, not
+conditions, and no MC/DC tool for Go exists, so **this project does not meet
+6.4.4.c and does not claim to**. A reader who sees a coupling figure and no
+mention of MC/DC could infer the structural set is complete; it is not, and
+this paragraph exists so that no document here reads as though it were.
+
 ---
 
 ## 1. Get the tool
