@@ -191,7 +191,10 @@ func TestParseRegistrySkipsABlankLineBetweenRows(t *testing.T) {
 		t.Fatalf("a blank line between rows was refused: %v", err)
 	}
 	if len(got) != 2 {
-		t.Errorf("%d couplings, want 2", len(got))
+		t.Fatalf("%d couplings, want 2", len(got))
+	}
+	if got[0].Symbol != "A" || got[1].Symbol != "B" {
+		t.Errorf("symbols = %q, %q, want \"A\", \"B\"", got[0].Symbol, got[1].Symbol)
 	}
 }
 
