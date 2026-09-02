@@ -111,8 +111,8 @@ func TestTheRecorderAnswersAfterRun(t *testing.T) {
 	go func() { done <- rec.Observed() }()
 	select {
 	case got := <-done:
-		if !slices.Contains(got, "data") {
-			t.Errorf("Observed() = %q after Run, want it to name the path the run served", got)
+		if !slices.Equal(got, []string{"data"}) {
+			t.Errorf("Observed() = %q after Run, want %q", got, []string{"data"})
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Observed() blocked after Run, so Run left the recorder locked")
