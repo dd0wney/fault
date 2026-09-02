@@ -184,7 +184,8 @@ line number. An escaped mutant with no row turns the gate red (`NEW
 SURVIVOR`), and so does a row with no matching escaped mutant (`STALE ROW`),
 because a list that has drifted from the run is worse than no list. To add a
 row, paste the one the gate prints, then replace `TODO: read it` with the
-reason after reading the function.
+reason after reading the function. The gate refuses a reason that starts
+with `TODO`, so the pasted row is refused until it is read.
 
 ## Credits
 
