@@ -68,6 +68,15 @@ operation failed, nothing leaked, the state is valid. Rule 10, use analyzers,
 is the checker this section says a sweep is not. Rule 3, no allocation after
 initialisation, names the condition `fault/alloc` tests the response to.
 
+The second assertion has its own checklist package, `fault/leak`. `leak.Check`
+reads every counter a scenario holds — `fs.Fault`, `alloc.Fault`, `sql.Fault`
+— and fails the test for a handle still held, or a counter that never rose at
+all, which is the "nothing leaked" reading a final count of zero cannot give
+by itself. `leak.Goroutines` does the same for a worker a scenario started and
+did not stop, over a `goroutine.Snapshot` taken before the scenario ran. The
+third assertion, the state is valid, stays the caller's: no helper in this
+library claims to answer it.
+
 ## What the evidence does not establish
 
 Stated here, where a reader arrives with the question, and not only in the
@@ -166,7 +175,7 @@ package away.
 ## Development
 
 ```
-go test ./...                          # 287 tests, counted with go test -list on 2026-09-02
+go test ./...                          # 331 tests, counted with go test -list on 2026-09-02
 ./scripts/mutation-selftest.sh         # prove the mutation gate can fail
 ./scripts/mutation.sh                  # then run it
 ./scripts/no-external-deps.sh          # standard library only

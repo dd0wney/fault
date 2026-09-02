@@ -484,7 +484,27 @@ scenario can leak.
 - `./alloc/` and `./sql/` re-measured, and the baseline rows updated with the
   date. Both currently sit at 1.00, so any survivor turns CI red.
 
-### 13. The three questions, and which one a scenario never asked
+### 13. The three questions, and which one a scenario never asked  ✔ done 2026-09-02
+
+The decision was a checklist plus a helper, taken 2026-09-02: `fault/leak`, a
+new package, standard library only, importing no other package of this
+module. `Report` reads `Outstanding` and `MaxOutstanding` on every counter a
+scenario holds and reports one sentence per problem — a count still held,
+named through `OpenPaths` when the counter offers it, and a count that never
+rose, the `MaxOutstanding` reading generalised across instruments. `Check` is
+`Report` on a `testing.TB`, and fails given no counter too, because a check
+that checked nothing reads exactly like a check that passed. `Goroutines`
+does the same over a `goroutine.Snapshot`.
+
+Measured 2026-09-02 in a fresh scratch worktree, the house method: 0.913043,
+2 survivors of 23, floor 0.91. Both survivors are the removed-`t.Helper`
+class every other package here already carries. One real gap the first run
+found — `Report`'s sort of the Namer path list had no test where sorting
+changed the output — was pinned before the floor was set, not documented as
+a survivor. The coupling gate needed a second test, run the normal way
+rather than through the re-exec child, because a coverage-instrumented
+parent process cannot see what a plain re-exec child alone exercises;
+`docs/couplings.tsv` carries two new rows, C15 and C16.
 
 `doc.go` names the assertion set a fault-injection loop needs — the operation
 failed, nothing leaked, the state is still valid — and `alloc/alloc.go:55`
@@ -584,4 +604,4 @@ tabulate — which is the argument for doing them after task 4 rather than befor
 ## Open decisions
 
 - **Task 9**: the sibling package's name. `fault/evidence` is the suggestion.
-- **Task 13**: helper plus checklist, or documentation alone.
+- **Task 13**: DECIDED 2026-09-02, helper plus checklist. See the task itself.
