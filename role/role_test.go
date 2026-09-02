@@ -175,7 +175,7 @@ func TestWalkRefusesAnUnstableRole(t *testing.T) {
 	// as carefully as the error identity. It must name the role, both
 	// operations, and WHERE they diverged -- a reader with the names but not
 	// the position still has to find it by hand.
-	for _, want := range []string{"flush", "write wal", "sync wal", "operation 1", "pass 2"} {
+	for _, want := range []string{"flush", `did "sync wal"`, `"write wal" in the previous pass`, "operation 1", "pass 2"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the diagnostic must name %q, so a reader can act on it: %v", want, err)
 		}
