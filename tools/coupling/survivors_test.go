@@ -246,7 +246,7 @@ func TestRunNamesEachFailureOnStderr(t *testing.T) {
 		{"a missing registry", "testdata", filepath.Join(dir, "nope.tsv"), "testdata/profile-mixed.out", "open " + filepath.Join(dir, "nope.tsv")},
 		{"a registry declaring nothing", "testdata", "testdata/registry-comments-only.tsv", "testdata/profile-mixed.out", "declares no couplings"},
 		{"an undeclared package", "testdata/mod", registryOnlyA, "testdata/profile-mixed.out", "example.com/mod/b"},
-		{"a symbol nothing declares", "testdata", registryUnknown, "testdata/profile-mixed.out", "the registry and the code disagree"},
+		{"a symbol nothing declares", "testdata", registryUnknown, "testdata/profile-mixed.out", "the registry and the code disagree: C1 names fixture.NoSuchSymbol"},
 		{"a missing profile", "testdata", "testdata/registry.tsv", filepath.Join(dir, "nope.out"), "open " + filepath.Join(dir, "nope.out")},
 		{"a missing profile, the hint", "testdata", "testdata/registry.tsv", filepath.Join(dir, "nope.out"), "-coverprofile"},
 		{"a profile that matches nothing", "testdata", "testdata/registry.tsv", "testdata/profile-other-package.out", "matched no statement"},
@@ -442,7 +442,10 @@ func TestResolveSkipsAnExemptRowAndContinuesPastIt(t *testing.T) {
 func TestResolveNamesAPackageDirectoryItCannotRead(t *testing.T) {
 	_, err := resolve("testdata", []Coupling{{ID: "C1", Kind: "control", Package: "no-such-package", Symbol: "A"}})
 	if err == nil || !strings.Contains(err.Error(), "names package") {
-		t.Errorf("resolve = %v, want the read failure named", err)
+		t.Fatalf("resolve = %v, want the read failure named", err)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("resolve = %v, want the ReadDir failure itself wrapped in, not swallowed", err)
 	}
 }
 
