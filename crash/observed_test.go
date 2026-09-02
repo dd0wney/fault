@@ -31,6 +31,10 @@ func seedThroughSeam(t *testing.T, rec *crash.Recorder, dir, name string) {
 // rename. A rename is the operation most likely to be the ONLY one a store
 // performs on its destination name, so a report that named the source alone
 // would answer "no" for the file the caller actually cares about.
+//
+// The result is checked against a literal sorted slice, not slices.IsSorted,
+// because a two-path result is sorted by chance about half the time and a
+// three-path result whose insertion order the map iterates unsorted is not.
 func TestObservedNamesEveryPathTheRecorderServed(t *testing.T) {
 	dir := t.TempDir()
 	rec := crash.Record(faultfs.OS(), dir)
@@ -39,15 +43,16 @@ func TestObservedNamesEveryPathTheRecorderServed(t *testing.T) {
 	if err := rec.Rename(filepath.Join(dir, "data.tmp"), filepath.Join(dir, "data")); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
+	seedThroughSeam(t, rec, dir, "extra.dat")
 
 	got := rec.Observed()
-	for _, want := range []string{"data.tmp", "data"} {
+	for _, want := range []string{"data.tmp", "data", "extra.dat"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("Observed() = %q, want it to contain %q", got, want)
 		}
 	}
-	if !slices.IsSorted(got) {
-		t.Errorf("Observed() = %q, want a sorted list — a caller that prints it needs a stable order", got)
+	if sorted := []string{"data", "data.tmp", "extra.dat"}; !slices.Equal(got, sorted) {
+		t.Errorf("Observed() = %q, want the literal sorted slice %q", got, sorted)
 	}
 	for i := 1; i < len(got); i++ {
 		if got[i] == got[i-1] {
