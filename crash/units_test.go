@@ -98,6 +98,38 @@ func TestSplitAtCrashOnlyOnlySplitsTheWriteAtTheCrash(t *testing.T) {
 	}
 }
 
+// With SplitAtCrashOnly OFF, every pending write that crosses a boundary
+// splits, not only the one at the crash point. The test above pins the flag
+// on; nothing pinned it off, so the guard could ignore the flag and force
+// every earlier write whole while the whole suite stayed green. The ./crash/
+// baseline row recorded this gap by name.
+//
+// MEASURED 2026-09-02: with the guard changed to `splittable && true && n != k`,
+// every test in this package passed.
+func TestEveryPendingWriteSplitsWhenSplitAtCrashOnlyIsOff(t *testing.T) {
+	entries := []entry{
+		{n: 1, k: kWrite, path: "a", off: 0, data: make([]byte, 10000)},
+		{n: 2, k: kWrite, path: "a", off: 10000, data: make([]byte, 10000)},
+	}
+	got := units(entries, []int{1, 2}, 2, Model{Sector: 4096})
+
+	var forEntry1, forEntry2 int
+	for _, u := range got {
+		switch u.entry {
+		case 1:
+			forEntry1++
+		case 2:
+			forEntry2++
+		}
+	}
+	if forEntry1 != 3 {
+		t.Errorf("entry 1, before the crash point, produced %d units, want 3 -- the flag is off, so it splits too", forEntry1)
+	}
+	if forEntry2 != 3 {
+		t.Errorf("entry 2, at the crash point, produced %d units, want 3", forEntry2)
+	}
+}
+
 // A write that never crosses a sector boundary was not split, so its unit must
 // be the whole one. Naming it ".s0" claims a granularity that did not apply,
 // and it gives Model{Sector: 0} and a sector larger than every write two

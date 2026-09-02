@@ -166,6 +166,58 @@ func TestASyncAfterTheCrashPointCoversNothing(t *testing.T) {
 	}
 }
 
+// A create in a nested directory is covered by a sync on THAT directory, and
+// needs no sync on the root. The rule's second term, dirSynced[path.Dir(e.to)],
+// applies only to a rename; for every other metadata entry e.to is empty, and
+// the `e.to == ""` short-circuit is what keeps path.Dir("") -- which is "." --
+// out of the decision. Remove it and a create under "d" also needs the root
+// synced. Every reference store puts its files at the root, where "." is the
+// directory anyway, so nothing could see the difference. The ./crash/ baseline
+// row recorded this gap by name.
+//
+// MEASURED 2026-09-02: with the term changed to `(false || dirSynced[...])`,
+// every test in this package passed.
+func TestADirectorySyncCoversACreateInThatDirectoryAlone(t *testing.T) {
+	entries := []entry{
+		{n: 1, k: kMkdir, path: "d"},
+		{n: 2, k: kCreate, path: "d/a"},
+		{n: 3, k: kSync, path: "d", dir: true},
+	}
+	durable, pending := split(entries, 3, Model{})
+	if !contains(durable, 2) {
+		t.Errorf("the create in d is %v/%v, want durable -- its own directory was synced, and the root need not be", durable, pending)
+	}
+}
+
+// split partitions the MUTATING entries and no other. A read, an open or a
+// sync in either set would become a loss unit, and a lost unit that changes
+// no bytes rebuilds the same tree as losing nothing, so dedup hides it from
+// every plan-level test. The unit level is the only place that can see it.
+//
+// MEASURED 2026-09-02: with the `!e.k.mutates()` skip removed, every test in
+// this package passed.
+func TestSplitPartitionsOnlyTheMutatingEntries(t *testing.T) {
+	entries := []entry{
+		{n: 1, k: kCreate, path: "a"},
+		{n: 2, k: kRead, path: "a"},
+		{n: 3, k: kSync, path: "a"},
+		{n: 4, k: kWrite, path: "a"},
+	}
+	durable, pending := split(entries, 4, Model{})
+	for _, n := range []int{2, 3} {
+		if contains(durable, n) || contains(pending, n) {
+			t.Errorf("entry %d does not mutate and split placed it in %v/%v", n, durable, pending)
+		}
+	}
+	// Both mutating entries are pending: the file sync at 3 covers no write
+	// before it, and no directory sync covers the create. The first version
+	// of this assertion expected the create durable, and the green run said
+	// no -- the sync is on the file, not the directory.
+	if !contains(pending, 1) || !contains(pending, 4) || len(durable) != 0 {
+		t.Errorf("the mutating entries are %v/%v, want both pending", durable, pending)
+	}
+}
+
 // The same rule for metadata: a directory sync after the crash point does not
 // make the rename durable.
 func TestADirectorySyncAfterTheCrashPointCoversNothing(t *testing.T) {
