@@ -56,6 +56,20 @@ func TestReportNamesTheHandlesBehindTheCount(t *testing.T) {
 	}
 }
 
+// TestReportSortsThePathsRegardlessOfInputOrder pins a mutation gate
+// finding: the fixture above holds two IDENTICAL names, so removing the
+// sort inside Report changed no test result there. This fixture holds two
+// DISTINCT, out-of-order names, which only a real sort puts back in order.
+func TestReportSortsThePathsRegardlessOfInputOrder(t *testing.T) {
+	n := namerFake{outstanding: 2, maxOut: 2, paths: []string{"zeta.log", "alpha.log"}}
+
+	got := Report(n)
+	want := fmt.Sprintf("%T still holds 2: alpha.log, zeta.log", n)
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("Report(%+v) = %v, want [%q]", n, got, want)
+	}
+}
+
 func TestReportRefusesACountThatNeverRose(t *testing.T) {
 	c := counterFake{outstanding: 0, maxOut: 0}
 
