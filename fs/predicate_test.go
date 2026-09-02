@@ -2,11 +2,13 @@ package fs_test
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"syscall"
 	"testing"
 
@@ -273,6 +275,86 @@ var predicates = []predicate{
 	{"os.IsPermission", os.IsPermission},
 	{"errors.Is(os.ErrClosed)", func(e error) bool { return errors.Is(e, os.ErrClosed) }},
 	{"errors.Is(errors.ErrUnsupported)", func(e error) bool { return errors.Is(e, errors.ErrUnsupported) }},
+}
+
+// The predicate table at the FS level, over the same rows as the Op table in
+// os_test.go, so there is one FS table and not two.
+//
+// No unprivileged route makes a path operation report EIO or ENOSPC, the two
+// classes this package injects: realerr_test.go measured what the two devices
+// give each FS method, and the rows here use a missing path or a directory
+// under a file, which give ENOENT and ENOTDIR. So a real error of the injected
+// class is not available at this level, and the comparison is against a real
+// error of a DIFFERENT class.
+//
+// That does not make the class predicates uncomparable. It makes their
+// answers predictable. Each row names, in its differs list, the predicates
+// the class difference changes: errors.Is(syscall.EIO) on every row, and
+// os.IsNotExist on the ENOENT rows. Those must DISAGREE, or the list is stale.
+// Every other predicate must AGREE, which is the full rule 4 comparison for
+// six of the eight. An earlier version of this test excluded all five class
+// predicates as "differs by construction" and logged them; a reviewer showed
+// that errors.Is(ENOSPC), os.IsPermission and errors.Is(os.ErrClosed) answer
+// false on both sides of every row, so they agree, and the exclusion left
+// real coverage unclaimed while stating a wrong reason for it.
+//
+// What the comparison catches is real: a Rename that returned *os.PathError
+// in place of *os.LinkError, or an FS-level refusal that carried the
+// errors.ErrUnsupported sentinel no filesystem produces, fails here and passes
+// the Op comparison beside it. The row's errShape in os_test.go checks the
+// concrete type too, on the way to the Op string; the two guards overlap on
+// purpose, because one asks what the error IS and the other asks what a
+// caller's predicates SAY, and a wrapper can satisfy one without the other.
+func TestInjectedAndRealFSErrorsAnswerEveryPredicateAsTheClassPredicts(t *testing.T) {
+	fixture := newOpFixture(t)
+
+	for _, tc := range opCases {
+		t.Run(tc.name, func(t *testing.T) {
+			real := tc.real(fixture)
+			if real == nil {
+				t.Fatalf("the real route for %s produced no error, so this row compares nothing", tc.name)
+			}
+			injected := injectedFSError(t, tc.inj)
+
+			for _, p := range predicates {
+				wantAnswer, gotAnswer := p.ask(real), p.ask(injected)
+				if slices.Contains(tc.differs, p.name) {
+					if wantAnswer == gotAnswer {
+						t.Errorf("%s: listed as differing by construction between a real %s and an "+
+							"injected EIO, and both answer %v. The differs list is stale, and a stale "+
+							"exclusion hides a comparison", p.name, tc.realClass, wantAnswer)
+					}
+					continue
+				}
+				if wantAnswer != gotAnswer {
+					t.Errorf("%s: the os package answers %v and the injected error answers %v. "+
+						"A caller that applies this predicate takes a different branch against "+
+						"the injected error than it would against the real one", p.name, wantAnswer, gotAnswer)
+				}
+			}
+			for _, name := range tc.differs {
+				if !slices.ContainsFunc(predicates, func(p predicate) bool { return p.name == name }) {
+					t.Errorf("differs names %q, which is not a predicate in the table", name)
+				}
+			}
+		})
+	}
+
+	// The positive control, at this level. A bare error built with
+	// fmt.Errorf is the shape that cost a peer project a record, and at least
+	// one predicate has to separate it from a real path error. If none did,
+	// every row above would agree about nothing.
+	bare := fmt.Errorf("injected failure on %s", "x")
+	real := fixture.real.Remove(fixture.missing)
+	separated := false
+	for _, p := range predicates {
+		if p.ask(real) != p.ask(bare) {
+			separated = true
+		}
+	}
+	if !separated {
+		t.Fatal("no predicate separates a bare fmt.Errorf from a real path error, so the table above proves nothing")
+	}
 }
 
 // The full strength of rule 4, for the methods where a real error of the
