@@ -94,9 +94,13 @@ func TestSubtractNamesThreeOfManyDisagreeingBlocksInOrder(t *testing.T) {
 // index in two messages each survived, because nothing read the text.
 func TestParseErrorsNameTheLineAndTheBadField(t *testing.T) {
 	for _, tc := range []struct{ name, text, wants, refuses string }{
+		// The label and the quoted value together, because the wrapped Atoi
+		// error repeats the bad value on its own, so the value alone is in
+		// the message whichever field the label names. A first version of
+		// this table asserted the value alone and let that mutant live.
 		{"execution count on line 2", "mode: set\nx.go:1.1,2.1 3 BAD\n", "line 2", ""},
-		{"the statement count field", "mode: set\nx.go:1.1,2.1 NOTNUM 7\n", `"NOTNUM"`, `"x.go:1.1,2.1"`},
-		{"the execution count field", "mode: set\nx.go:1.1,2.1 3 BAD\n", `"BAD"`, `"3"`},
+		{"the statement count field", "mode: set\nx.go:1.1,2.1 NOTNUM 7\n", `statement count "NOTNUM"`, `statement count "7"`},
+		{"the execution count field", "mode: set\nx.go:1.1,2.1 3 BAD\n", `execution count "BAD"`, `execution count "3"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := parse(strings.NewReader(tc.text))
