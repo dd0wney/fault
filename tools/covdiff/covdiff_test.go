@@ -80,8 +80,13 @@ demo/store.go:12.2,13.3 2 1
 	if err := subtract(mustParse(t, both), mustParse(t, both), &out); err != nil {
 		t.Fatalf("subtract: %v", err)
 	}
-	if strings.Contains(out.String(), " 1\n") {
-		t.Errorf("a block survived a baseline that covered everything:\n%s", out.String())
+
+	want := `mode: set
+demo/store.go:10.2,11.3 1 0
+demo/store.go:12.2,13.3 2 0
+`
+	if out.String() != want {
+		t.Errorf("got:\n%s\nwant:\n%s", out.String(), want)
 	}
 }
 
@@ -301,10 +306,9 @@ func TestMissingFlagsPrintTheInvocation(t *testing.T) {
 	if got := run("", "", "", &stdout, &stderr); got != exitCannotTell {
 		t.Fatalf("exit %d, want %d", got, exitCannotTell)
 	}
-	for _, want := range []string{"-baseline", "-profile", "go tool covdiff"} {
-		if !strings.Contains(stderr.String(), want) {
-			t.Errorf("the diagnostic omits %q: %q", want, stderr.String())
-		}
+	want := "go tool covdiff -baseline normal.out -profile merged.out -o robustness.out"
+	if !strings.Contains(stderr.String(), want) {
+		t.Errorf("the diagnostic omits the runnable invocation %q: %q", want, stderr.String())
 	}
 }
 
