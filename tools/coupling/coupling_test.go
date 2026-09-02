@@ -92,6 +92,14 @@ func TestResolveFindsAMethod(t *testing.T) {
 	if len(sites) != 1 {
 		t.Fatalf("%d sites, want 1", len(sites))
 	}
+	// Save is declared at testdata/fixture/store.go:19-24 -- the "func"
+	// line through its closing brace -- worked by hand from the fixture.
+	if sites[0].File != "fixture/store.go" {
+		t.Errorf("File = %q, want %q", sites[0].File, "fixture/store.go")
+	}
+	if sites[0].Start != 19 || sites[0].End != 24 {
+		t.Errorf("range %d-%d, want 19-24", sites[0].Start, sites[0].End)
+	}
 }
 
 // A renamed function silently dropped would make the tool report a number for
