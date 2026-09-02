@@ -111,8 +111,8 @@ func TestResolveRefusesAnUnknownSymbol(t *testing.T) {
 	if err == nil {
 		t.Fatal("resolve accepted a symbol nothing declares, want an error")
 	}
-	if !strings.Contains(err.Error(), "C9") && !strings.Contains(err.Error(), "Vanished") {
-		t.Errorf("err = %v, want it to name the coupling", err)
+	if !strings.Contains(err.Error(), "C9") || !strings.Contains(err.Error(), "Vanished") {
+		t.Errorf("err = %v, want it to name both the coupling ID and the missing symbol", err)
 	}
 }
 
@@ -242,6 +242,9 @@ func TestCheckCompleteRefusesAnUndeclaredPackage(t *testing.T) {
 	if !strings.Contains(err.Error(), "example.com/mod/b") {
 		t.Errorf("the diagnostic must name the package a reader has to act on: %v", err)
 	}
+	if strings.Contains(err.Error(), "example.com/mod/a") {
+		t.Errorf("err = %v, want it NOT to name package a, which is declared", err)
+	}
 }
 
 func TestAnExemptionSatisfiesCompleteness(t *testing.T) {
@@ -301,6 +304,9 @@ func TestCheckCompleteRefusesWhenItExaminesNothing(t *testing.T) {
 	if !strings.Contains(err.Error(), "example.com/mod/b") {
 		t.Errorf("with root \".\", the walk was skipped: it should have found package b "+
 			"undeclared, and instead reported %v", err)
+	}
+	if strings.Contains(err.Error(), "example.com/mod/a") {
+		t.Errorf("err = %v, want it NOT to name package a, which is declared", err)
 	}
 }
 
