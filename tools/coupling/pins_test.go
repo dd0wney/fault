@@ -82,7 +82,10 @@ func TestTheReportPrintsTheFigureAndTheJSONCarriesIt(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{
-		"4/6 statements across 2 coupling sites = 66.7%",
+		"Statement coverage restricted to declared coupling sites.",
+		"covered          id   kind     site",
+		// The summary line, then the blank line the report prints after it.
+		"4/6 statements across 2 coupling sites = 66.7%\n\n",
 		"1 coupling site(s) have no covered statement at all.",
 	} {
 		if !strings.Contains(text, want) {
@@ -110,6 +113,12 @@ func TestTheReportPrintsTheFigureAndTheJSONCarriesIt(t *testing.T) {
 	errs.Reset()
 	if got := run("testdata", "testdata/registry.tsv", "testdata/profile-mixed.out", "json", &out, &errs); got != exitUncovered {
 		t.Fatalf("json: exit %d, want %d", got, exitUncovered)
+	}
+	// Indented, two spaces, as the encoder is told. A caller reads the JSON
+	// by machine and a person reads it in a log, and the indent is for the
+	// second.
+	if !strings.HasPrefix(out.String(), "[\n  {") {
+		t.Errorf("the JSON is not indented as documented:\n%s", out.String())
 	}
 	var results []Result
 	if err := json.Unmarshal(out.Bytes(), &results); err != nil {
