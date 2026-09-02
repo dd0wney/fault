@@ -177,6 +177,24 @@ func Run(t *testing.T, rec *Recorder, m Model, check func(*testing.T, faultfs.FS
 	root := rec.root
 	rec.mu.Unlock()
 
+	// The recorded root must not change while the states run. Every check is
+	// handed a filesystem rooted in a rebuilt copy, so a change to the root
+	// means the code under test reached the filesystem through the os package
+	// and acted on the tree the run copied FROM, while the sweep scanned
+	// copies that code never touched. A result nobody can interpret reads
+	// exactly like a real one, so the run is void and says so, naming the
+	// path. doc.go records the finding this came from and the half of the
+	// hole that stays open.
+	//
+	// The whole root is read once per state. A size-and-mtime shortcut would
+	// miss a same-size rewrite within the clock's granularity, which is
+	// exactly the shape a repair that rewrites a record in place produces,
+	// so the cost is paid rather than the check weakened.
+	before, err := readTree(root)
+	if err != nil {
+		t.Fatalf("crash: cannot read the recorded root before the states run: %v", err)
+	}
+
 	// plan sorts by crash point first, so the states of one point are already
 	// adjacent and no map is needed to group them.
 	for i := 0; i < len(states); {
@@ -199,6 +217,22 @@ func Run(t *testing.T, rec *Recorder, m Model, check func(*testing.T, faultfs.FS
 					t.Cleanup(func() {
 						if t.Failed() {
 							t.Logf("lost: %s", lostDetail(byIndex, s.lost))
+						}
+					})
+
+					// In a Cleanup rather than after check, so it runs when
+					// the check itself failed and stopped the subtest. A
+					// check that escaped the sandbox and then failed is the
+					// most likely shape, and it is the one whose failure
+					// must not be read at face value.
+					t.Cleanup(func() {
+						after, err := readTree(root)
+						if err != nil {
+							t.Errorf("crash: cannot read the recorded root after the check: %v", err)
+							return
+						}
+						if d := diffTree(before, after); d != "" {
+							t.Errorf("crash: the check changed the recorded root, so the code under test reached the filesystem through the os package and not through the one it was given; the run is void:\n%s", d)
 						}
 					})
 

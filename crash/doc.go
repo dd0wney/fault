@@ -192,6 +192,17 @@
 // bytes already there. All three were measured. Use [Recorder.Observed] to
 // assert that the file carrying the durability under test was actually served.
 //
+// The check has the same hole in the other direction, and [Run] closes half
+// of it. Every check is handed a filesystem rooted in a rebuilt copy, so a
+// check that changes the recorded root reached the filesystem through the os
+// package and acted on the tree the run copied FROM, while the sweep scanned
+// copies that code never touched. Run reads the root before the states and
+// after each check, and a difference voids the run, naming the path. That
+// shape produced a false finding against a peer project before this check
+// existed. A read through os leaves no trace, so the other half stays open:
+// a check that reads the original tree instead of the rebuilt one reports on
+// a state the crash never produced, and nothing here can see it.
+//
 // Nothing useful, under the POSIX metadata rule, when the filesystem under test
 // cannot sync a directory. This is the sharpest of the four.
 //
