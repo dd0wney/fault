@@ -105,3 +105,5 @@
 ./crash/	crash/state.go:numbers/decrementer:7ee517d520ce049b	crash/state.go:105 numbers/decrementer	Write and WriteAt add an entry only when n > 0, so no record holds an empty write, and the guard's value on an empty write is never observed.
 ./crash/	crash/state.go:numbers/decrementer:a12f21c02b5e1f37	crash/state.go:219 numbers/decrementer	n >= 62 instead of n >= 63: refused by the maxStates cap with the same message before the difference is reachable.
 ./crash/	crash/state.go:numbers/incrementer:9a0cc4c1007a92a2	crash/state.go:105 numbers/incrementer	a one-byte write never crosses a sector boundary, so sectorsOf returns the same whole unit whether the guard admits it or not.
+./leak/	leak/goroutines.go:statement/remove:2835f8c26fe745cc	leak/goroutines.go:18 statement/remove	removed t.Helper() in Goroutines: changes only which line a failure points at, and no test asserts on that line.
+./leak/	leak/leak.go:statement/remove:2091062864479cfe	leak/leak.go:55 statement/remove	removed t.Helper() in Check: the same class, at Check's own no-counter guard.
