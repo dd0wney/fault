@@ -157,9 +157,12 @@ func parseBlock(text string) (key, file string, start, stmts, count int, err err
 	}
 	key = f[0]
 
+	// colon <= 0 rather than < 0: a block whose file name is empty is as
+	// malformed as one with no colon, and accepting it attributed nothing to
+	// a file called "". A survivor sat on exactly that boundary.
 	colon := strings.LastIndex(f[0], ":")
-	if colon < 0 {
-		return "", "", 0, 0, 0, fmt.Errorf("no \":\" separating the file from the block: %q", f[0])
+	if colon <= 0 {
+		return "", "", 0, 0, 0, fmt.Errorf("no file name and \":\" before the block: %q", f[0])
 	}
 	file = f[0][:colon]
 
