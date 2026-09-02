@@ -44,8 +44,9 @@ func TestAStateNameCarriesNoSlash(t *testing.T) {
 	entries := []entry{{n: 1, k: kWrite, path: "sub/dir/a"}}
 	byIndex := index(entries)
 
-	if got := stateName(byIndex, []unit{{entry: 1}}); strings.Contains(got, "/") {
-		t.Errorf("stateName = %q, which contains a slash and would nest", got)
+	want := "lost=sub|dir|a:write1"
+	if got := stateName(byIndex, []unit{{entry: 1}}); got != want {
+		t.Errorf("stateName = %q, want %q", got, want)
 	}
 }
 
