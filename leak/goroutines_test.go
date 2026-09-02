@@ -1,4 +1,4 @@
-package leak
+package leak_test
 
 import (
 	"os"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dd0wney/fault/goroutine"
+	"github.com/dd0wney/fault/leak"
 )
 
 // TestGoroutinesNamesEachLeakedGoroutine is a re-exec test for the same
@@ -19,7 +20,7 @@ func TestGoroutinesNamesEachLeakedGoroutine(t *testing.T) {
 		block := make(chan struct{})
 		go func() { <-block }()
 
-		Goroutines(t, snap, 50*time.Millisecond)
+		leak.Goroutines(t, snap, 50*time.Millisecond)
 		return
 	}
 
@@ -45,8 +46,11 @@ func TestGoroutinesNamesEachLeakedGoroutine(t *testing.T) {
 // can see it. The test above cannot give that coverage: its child runs as a
 // separate, plain re-exec of os.Args[0] with no -test.coverprofile flag, so
 // whatever it alone exercises inside Goroutines is invisible to a coverage
-// profile taken of the parent.
+// profile taken of the parent. This direct call passes an empty snapshot
+// delta, so it covers t.Helper() and the loop's zero-iteration path, and not
+// the t.Errorf inside the loop body -- that statement runs only in the
+// re-exec child above, per C16 in docs/couplings.tsv.
 func TestGoroutinesPassesWhenNothingLeaked(t *testing.T) {
 	snap := goroutine.Take()
-	Goroutines(t, snap, 0)
+	leak.Goroutines(t, snap, 0)
 }

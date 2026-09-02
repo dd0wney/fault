@@ -1,4 +1,4 @@
-package leak
+package leak_test
 
 import (
 	"os"
@@ -9,6 +9,7 @@ import (
 
 	"github.com/dd0wney/fault"
 	faultfs "github.com/dd0wney/fault/fs"
+	"github.com/dd0wney/fault/leak"
 )
 
 // testing.TB cannot be faked -- it has an unexported method -- so Check is
@@ -31,7 +32,7 @@ func TestCheckFailsTheTestOnAHeldHandle(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Deliberately not closed: this is the leak Check must report.
-		Check(t, fsys)
+		leak.Check(t, fsys)
 		return
 	}
 
@@ -55,7 +56,7 @@ func TestCheckFailsTheTestOnAHeldHandle(t *testing.T) {
 // second value of the same environment variable.
 func TestCheckGivenNothingFails(t *testing.T) {
 	if os.Getenv("FAULT_LEAK_CHILD") == "no-counter" {
-		Check(t)
+		leak.Check(t)
 		return
 	}
 
@@ -78,7 +79,7 @@ func TestCheckGivenNothingFails(t *testing.T) {
 // happens, from taking the parent test binary down with it.
 func TestCheckGivenANilCounterFailsInsteadOfPanicking(t *testing.T) {
 	if os.Getenv("FAULT_LEAK_CHILD") == "nil-counter" {
-		Check(t, nil)
+		leak.Check(t, nil)
 		return
 	}
 
@@ -118,10 +119,10 @@ func TestCheckPassesOnAScenarioThatOpenedAndClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	Check(t, fsys)
+	leak.Check(t, fsys)
 
 	untouched := faultfs.New(&fault.Points{}, faultfs.OS())
-	got := Report(untouched)
+	got := leak.Report(untouched)
 	if len(got) != 1 || !strings.Contains(got[0], "never held anything") {
 		t.Errorf("Report(untouched) = %v, want one sentence about never holding anything", got)
 	}
