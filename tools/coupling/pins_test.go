@@ -82,7 +82,13 @@ func TestTheReportPrintsTheFigureAndTheJSONCarriesIt(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{
-		"Statement coverage restricted to declared coupling sites.",
+		// The three header lines and the blank line after them, in full. The
+		// second and third carry the data-coupling-proxy disclosure that
+		// docs/coupling-workflow.md says the tool prints on every run, so a
+		// header that dropped them would make that page wrong.
+		"Statement coverage restricted to declared coupling sites.\n" +
+			"Control coupling is measured directly. Data coupling is measured by\n" +
+			"proxy: a row names a symbol, and a data couple is often one field read.\n\n",
 		"covered          id   kind     site",
 		// The summary line, then the blank line the report prints after it.
 		"4/6 statements across 2 coupling sites = 66.7%\n\n",
