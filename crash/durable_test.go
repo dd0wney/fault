@@ -142,3 +142,40 @@ func contains(xs []int, v int) bool {
 	}
 	return false
 }
+
+// A sync that has not run yet covers nothing. The crash point bounds what
+// happened: the sync at 3 is after the crash at 2, so the write at 2 is still
+// pending when the power goes.
+//
+// Every other test in this file puts the crash point at the LAST entry, so
+// none of them has an entry past k, and a split that read past k survived all
+// of them. MEASURED 2026-09-02: deleting the `if e.n > k { continue }` guard
+// passed the whole crash suite. With it gone, a sync recorded after the crash
+// point marks the file synced, every earlier write to it reads durable, and
+// the walk never builds the state that loses the write before its sync --
+// which is the central case of crash simulation.
+func TestASyncAfterTheCrashPointCoversNothing(t *testing.T) {
+	entries := []entry{
+		{n: 1, k: kCreate, path: "a"},
+		{n: 2, k: kWrite, path: "a"},
+		{n: 3, k: kSync, path: "a"},
+	}
+	durable, pending := split(entries, 2, Model{})
+	if !contains(pending, 2) {
+		t.Errorf("write 2 is %v/%v, want pending — the sync at 3 had not run when the power went", durable, pending)
+	}
+}
+
+// The same rule for metadata: a directory sync after the crash point does not
+// make the rename durable.
+func TestADirectorySyncAfterTheCrashPointCoversNothing(t *testing.T) {
+	entries := []entry{
+		{n: 1, k: kCreate, path: "tmp"},
+		{n: 2, k: kRename, path: "tmp", to: "data"},
+		{n: 3, k: kSync, path: ".", dir: true},
+	}
+	durable, pending := split(entries, 2, Model{})
+	if !contains(pending, 2) {
+		t.Errorf("the rename is %v/%v, want pending — the directory sync at 3 had not run", durable, pending)
+	}
+}
