@@ -13,8 +13,11 @@ type Counter interface {
 	MaxOutstanding() int
 }
 
-// Namer is what fs.Fault also answers: the names behind the count.
-type Namer interface {
+// namer is what fs.Fault also answers: the names behind the count. It has
+// no exported name, because no exported function of this package names it
+// -- a caller reaches it only by giving Report a Counter that also happens
+// to answer OpenPaths, never by naming the interface itself.
+type namer interface {
 	OpenPaths() []string
 }
 
@@ -22,24 +25,40 @@ type Namer interface {
 // answer it for a counter whose count never rose. It returns one sentence
 // per problem, and nothing when there is none.
 //
-// The two checks are independent, and both read the counter rather than
-// each other, because MaxOutstanding()==0 and Outstanding()>0 can never
-// both hold for a counter that keeps its own contract -- MaxOutstanding is
-// the high-water mark of Outstanding, so a real answer of zero for the
-// first makes the second zero too. Nothing here assumes the contract holds:
-// each sentence fires on its own reading of the counter, whatever the
-// other reading says.
+// A counter that also has an OpenPaths() []string method gives the names
+// behind the count: Outstanding gives the number, OpenPaths gives the
+// names, and when the two disagree, Report states both rather than
+// choosing one -- "still holds 2, and OpenPaths names 3: a, b, c".
+//
+// A nil counter gives its own sentence rather than a panic, so one bad
+// argument in a longer list does not take the whole check down with it.
+//
+// The two checks below are independent, and both read the counter rather
+// than each other, because MaxOutstanding()==0 and Outstanding()>0 can
+// never both hold for a counter that keeps its own contract --
+// MaxOutstanding is the high-water mark of Outstanding, so a real answer of
+// zero for the first makes the second zero too. Nothing here assumes the
+// contract holds: each sentence fires on its own reading of the counter,
+// whatever the other reading says.
 func Report(counters ...Counter) []string {
 	var out []string
 	for _, c := range counters {
+		if c == nil {
+			out = append(out, "leak: a nil counter was given, so this check proved nothing")
+			continue
+		}
 		if c.MaxOutstanding() == 0 {
 			out = append(out, fmt.Sprintf("%T never held anything, so its leak check proved nothing", c))
 		}
 		if n := c.Outstanding(); n > 0 {
-			if namer, ok := c.(Namer); ok {
-				paths := append([]string(nil), namer.OpenPaths()...)
+			if nm, ok := c.(namer); ok {
+				paths := append([]string(nil), nm.OpenPaths()...)
 				sort.Strings(paths)
-				out = append(out, fmt.Sprintf("%T still holds %d: %s", c, n, strings.Join(paths, ", ")))
+				if len(paths) == n {
+					out = append(out, fmt.Sprintf("%T still holds %d: %s", c, n, strings.Join(paths, ", ")))
+				} else {
+					out = append(out, fmt.Sprintf("%T still holds %d, and OpenPaths names %d: %s", c, n, len(paths), strings.Join(paths, ", ")))
+				}
 			} else {
 				out = append(out, fmt.Sprintf("%T still holds %d", c, n))
 			}

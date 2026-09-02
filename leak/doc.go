@@ -30,16 +30,18 @@
 //
 // # Using it
 //
-//	before := goroutine.Take()
-//	fsys := faultfs.New(p, faultfs.OS())
+//	for n, p := range fault.Sweep(t) {
+//		before := goroutine.Take()
+//		fsys := faultfs.New(p, faultfs.OS())
 //
-//	store, err := Open(fsys, dir)
-//	if !errors.Is(err, syscall.EIO) {
-//		t.Fatalf("op %d: got %v, want the injected EIO", n, err)
+//		store, err := Open(fsys, dir)
+//		if !errors.Is(err, syscall.EIO) {
+//			t.Fatalf("op %d: got %v, want the injected EIO", n, err)
+//		}
+//
+//		leak.Check(t, fsys)
+//		leak.Goroutines(t, before, 2*time.Second)
 //	}
-//
-//	leak.Check(t, fsys)
-//	leak.Goroutines(t, before, 2*time.Second)
 //
 // # The limit
 //
