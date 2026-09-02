@@ -252,8 +252,8 @@ func TestReplayRefusesToTruncateOrRenameAFileNoPresentEntryCreated(t *testing.T)
 			// entry 1, the create, is absent -- only the entry that names it is
 			// present.
 			got, err := replay(tree{}, entries, map[int]bool{2: true}, nil)
-			if err == nil {
-				t.Fatalf("replay invented a file for a %s with no present create: %v", name, got)
+			if err == nil || !strings.Contains(err.Error(), "no present entry created") {
+				t.Fatalf("replay = %v, %v, want the no-present-entry-created refusal", err, got)
 			}
 		})
 	}
