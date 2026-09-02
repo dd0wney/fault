@@ -1,6 +1,7 @@
 package crash
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -125,8 +126,8 @@ func TestReplayRefusesToInventAFile(t *testing.T) {
 	}
 	// entry 1, the create, is absent -- only its dependent write is present.
 	_, err := replay(tree{}, entries, map[int]bool{2: true}, nil)
-	if err == nil {
-		t.Fatal("replay invented a file for a write with no present create")
+	if err == nil || !strings.Contains(err.Error(), "no present entry created") {
+		t.Fatalf("replay = %v, want the no-present-entry-created refusal", err)
 	}
 }
 
@@ -142,8 +143,8 @@ func TestReplayRefusesToRemoveAFileNoPresentEntryCreated(t *testing.T) {
 	}
 	// entry 1, the create, is absent -- only the remove that names it is present.
 	_, err := replay(tree{}, entries, map[int]bool{2: true}, nil)
-	if err == nil {
-		t.Fatal("replay deleted a name no present entry created, in silence")
+	if err == nil || !strings.Contains(err.Error(), "no present entry created") {
+		t.Fatalf("replay = %v, want the no-present-entry-created refusal", err)
 	}
 }
 
