@@ -31,8 +31,8 @@ func TestParseSkipsAnEmptyLineAndReadsPastIt(t *testing.T) {
 // A block before the mode header is a refusal, even when a header follows.
 func TestParseRefusesABlockBeforeTheHeaderEvenWhenOneFollows(t *testing.T) {
 	_, err := parse(strings.NewReader("a.go:1.1,2.1 1 1\nmode: set\nb.go:1.1,2.1 1 0\n"))
-	if err == nil {
-		t.Fatal("parse accepted a block that came before the mode header")
+	if err == nil || !strings.Contains(err.Error(), "before the") {
+		t.Fatalf("parse = %v, want the block-before-the-header refusal", err)
 	}
 }
 
