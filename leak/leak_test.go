@@ -126,3 +126,24 @@ func TestReportGivenANilCounterSaysSoInsteadOfPanicking(t *testing.T) {
 		t.Errorf("Report(nil) = %v, want [%q]", got, want)
 	}
 }
+
+// TestReportContinuesPastANilCounterToLaterCounters is a mutation-gate pin.
+// A nil counter followed by a real one, with continue changed by hand to
+// break, gives only the nil sentence and drops the second counter's --
+// checked against that opposite by hand, and it fails there and passes
+// here. TestReportGivenANilCounterSaysSoInsteadOfPanicking cannot tell
+// continue from break, because a nil counter is its only argument, and
+// each statement leaves the loop the same way when there is nothing after
+// it to reach.
+func TestReportContinuesPastANilCounterToLaterCounters(t *testing.T) {
+	second := counterFake{outstanding: 1, maxOut: 1}
+
+	got := Report(nil, second)
+	want := []string{
+		"leak: a nil counter was given, so this check proved nothing",
+		fmt.Sprintf("%T still holds 1", second),
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("Report(nil, second) = %v, want %v", got, want)
+	}
+}
