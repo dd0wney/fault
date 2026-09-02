@@ -71,6 +71,32 @@ func TestCheckGivenNothingFails(t *testing.T) {
 	}
 }
 
+// TestCheckGivenANilCounterFailsInsteadOfPanicking is
+// TestCheckGivenNothingFails's sibling: Check(t) with an empty argument list
+// and Check(t, nil) with one nil argument take different paths through
+// Report, and this pins the second. The re-exec keeps a real panic, if one
+// happens, from taking the parent test binary down with it.
+func TestCheckGivenANilCounterFailsInsteadOfPanicking(t *testing.T) {
+	if os.Getenv("FAULT_LEAK_CHILD") == "nil-counter" {
+		Check(t, nil)
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.v")
+	cmd.Env = append(os.Environ(), "FAULT_LEAK_CHILD=nil-counter")
+	out, err := cmd.CombinedOutput()
+
+	if err == nil {
+		t.Errorf("the child test passed: Check did not fail on a nil counter\n%s", out)
+	}
+	if strings.Contains(string(out), "panic:") {
+		t.Errorf("the child panicked instead of failing cleanly:\n%s", out)
+	}
+	if !strings.Contains(string(out), "a nil counter was given") {
+		t.Errorf("the failure does not say why:\n%s", out)
+	}
+}
+
 // TestCheckPassesOnAScenarioThatOpenedAndClosed needs no re-exec for the
 // passing half: a Check that does not fail need not be caught by anything.
 // The "without the open" half is test 4 through the real adapter, and it is
