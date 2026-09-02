@@ -1,0 +1,81 @@
+package leak
+
+import (
+	"fmt"
+	"testing"
+)
+
+// counterFake is a Counter and nothing else -- Report's "not a Namer"
+// branch.
+type counterFake struct {
+	outstanding int
+	maxOut      int
+}
+
+func (c counterFake) Outstanding() int    { return c.outstanding }
+func (c counterFake) MaxOutstanding() int { return c.maxOut }
+
+// namerFake is a Counter that also names the handles behind its count.
+type namerFake struct {
+	outstanding int
+	maxOut      int
+	paths       []string
+}
+
+func (n namerFake) Outstanding() int    { return n.outstanding }
+func (n namerFake) MaxOutstanding() int { return n.maxOut }
+func (n namerFake) OpenPaths() []string { return n.paths }
+
+func TestReportIsSilentWhenEveryCountReturnedToZero(t *testing.T) {
+	c := counterFake{outstanding: 0, maxOut: 2}
+
+	got := Report(c)
+	if len(got) != 0 {
+		t.Errorf("Report(%+v) = %v, want no sentence", c, got)
+	}
+}
+
+func TestReportNamesTheClassAndTheCount(t *testing.T) {
+	c := counterFake{outstanding: 3, maxOut: 3}
+
+	got := Report(c)
+	want := fmt.Sprintf("%T still holds 3", c)
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("Report(%+v) = %v, want [%q]", c, got, want)
+	}
+}
+
+func TestReportNamesTheHandlesBehindTheCount(t *testing.T) {
+	// The count and the number of paths agree: two handles, two names.
+	n := namerFake{outstanding: 2, maxOut: 2, paths: []string{"wal.log", "wal.log"}}
+
+	got := Report(n)
+	want := fmt.Sprintf("%T still holds 2: wal.log, wal.log", n)
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("Report(%+v) = %v, want [%q]", n, got, want)
+	}
+}
+
+func TestReportRefusesACountThatNeverRose(t *testing.T) {
+	c := counterFake{outstanding: 0, maxOut: 0}
+
+	got := Report(c)
+	want := fmt.Sprintf("%T never held anything, so its leak check proved nothing", c)
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("Report(%+v) = %v, want [%q]", c, got, want)
+	}
+}
+
+func TestReportReportsEveryCounterNotJustTheFirst(t *testing.T) {
+	first := counterFake{outstanding: 1, maxOut: 1}
+	second := counterFake{outstanding: 0, maxOut: 0}
+
+	got := Report(first, second)
+	want := []string{
+		fmt.Sprintf("%T still holds 1", first),
+		fmt.Sprintf("%T never held anything, so its leak check proved nothing", second),
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("Report(first, second) = %v, want %v", got, want)
+	}
+}
