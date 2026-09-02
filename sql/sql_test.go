@@ -58,8 +58,8 @@ func TestAFailedConnectCountsNoOutstandingConnection(t *testing.T) {
 		err := db.PingContext(context.Background())
 
 		if n == 1 {
-			if err == nil {
-				t.Error("the armed connect did not fail")
+			if !errors.Is(err, faultsql.ErrInjected) {
+				t.Errorf("the armed connect: err = %v, want ErrInjected", err)
 			}
 			if got := f.Outstanding(); got != 0 {
 				t.Errorf("Outstanding() = %d after a failed connect, want 0", got)
