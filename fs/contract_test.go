@@ -65,15 +65,15 @@ func TestTheOperationTableCoversTheFSInterface(t *testing.T) {
 // The same comparison one level down, over fs.File.
 //
 // THE OPTIONAL METHODS ARE OUTSIDE THIS CHECK, and saying so is part of it.
-// Seek and WriteAt are not members of fs.File — a caller type-asserts for them,
-// exactly as it does for io.ReaderFrom — so reflection over the interface
-// cannot see them and their table in positional_test.go stays hand-maintained.
+// Seek, WriteAt and ReadAt are not members of fs.File — a caller type-asserts
+// for them, exactly as it does for io.ReaderFrom — so reflection over the
+// interface cannot see them.
 //
-// That is the same defect this file closes, one level further out, and it is
-// left open deliberately rather than hidden: an optional method set has no
-// declaration to compare against. The alternative would be a second
-// hand-written list of the optional interfaces, which is the thing being
-// removed rather than a fix for it.
+// They have an authority of their own since 2026-09-02: optionalMethodsOf in
+// positional_test.go reads the set from a live handle, and the optional table
+// there and the Op table in predicate_test.go are both compared against it.
+// Until then the set was a hand-written list, which is the defect this file
+// closes one level further out.
 func TestTheFileTableCoversTheFileInterface(t *testing.T) {
 	iface := reflect.TypeOf((*faultfs.File)(nil)).Elem()
 

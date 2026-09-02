@@ -441,6 +441,34 @@ func (f *faultFile) WriteAt(b []byte, off int64) (int, error) {
 	return n, f.failWith("write", syscall.ENOSPC)
 }
 
+// ReadAt reads at an absolute offset, when the base can, without moving the
+// file position.
+//
+// Capability first, then Trip, then delegate unchanged: the shape Seek and
+// WriteAt established. A store that reads a page at an absolute offset -- an
+// SSTable reader, a pager -- puts its reads through this call, and before it
+// existed those reads were an operation no sweep could fail. The caller's
+// type assertion failed, and the sweep exercised whatever fallback the caller
+// had rather than the path it ships.
+//
+// The injected Op is "read", as it is for Read. MEASURED 2026-09-02 by two
+// routes, a closed handle and /proc/self/mem: the os package reports Op "read"
+// for a failing ReadAt. It names the syscall and not the Go method, as it does
+// for WriteAt. Nothing here changes under NewShortWrite, which changes Write
+// and nothing else.
+func (f *faultFile) ReadAt(b []byte, off int64) (int, error) {
+	r, ok := f.base.(interface {
+		ReadAt(p []byte, off int64) (int, error)
+	})
+	if !ok {
+		return 0, f.errUnsupported("readat")
+	}
+	if f.p.Trip() {
+		return 0, f.fail("read")
+	}
+	return r.ReadAt(b, off)
+}
+
 func (f *faultFile) Sync() error {
 	if f.p.Trip() {
 		return f.fail("sync")

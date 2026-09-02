@@ -100,6 +100,15 @@ func writeAtOf(f faultfs.File) (interface {
 	return w, ok
 }
 
+func readAtOf(f faultfs.File) (interface {
+	ReadAt([]byte, int64) (int, error)
+}, bool) {
+	r, ok := f.(interface {
+		ReadAt([]byte, int64) (int, error)
+	})
+	return r, ok
+}
+
 // fileOpCase is one File method: the same operation on a real *os.File and on
 // the wrapper.
 type fileOpCase struct {
@@ -148,6 +157,16 @@ var fileOpCases = []fileOpCase{
 				return errors.New("the wrapper does not offer WriteAt")
 			}
 			_, err := w.WriteAt([]byte("x"), 0)
+			return err
+		}},
+	{"ReadAt",
+		func(f *os.File) error { _, err := f.ReadAt(make([]byte, 1), 0); return err },
+		func(f faultfs.File) error {
+			r, ok := readAtOf(f)
+			if !ok {
+				return errors.New("the wrapper does not offer ReadAt")
+			}
+			_, err := r.ReadAt(make([]byte, 1), 0)
 			return err
 		}},
 }
@@ -211,13 +230,20 @@ func TestTheFileOpTableCoversTheFileInterface(t *testing.T) {
 		}
 	}
 
-	// The two optional capabilities, named because reflection cannot reach
-	// them. Deleting one from the table above would otherwise be invisible,
-	// which is exactly how WriteAt kept a wrong Op string.
-	for _, optional := range []string{"Seek", "WriteAt"} {
+	// The optional capabilities, read from a live handle rather than written
+	// down. Reflection over fs.File cannot see them, and a hand-written list
+	// here is how WriteAt kept a wrong Op string: the list named the methods
+	// the author remembered, and no check compared it to the wrapper.
+	dir := t.TempDir()
+	f, err := faultfs.New(&fault.Points{}, faultfs.OS()).OpenFile(filepath.Join(dir, "a"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	for _, optional := range optionalMethodsOf(t, f) {
 		if !inTable[optional] {
-			t.Errorf("the File Op table has no %s. It is optional and reflection cannot see "+
-				"it, so this hand-written line is the only thing that can notice", optional)
+			t.Errorf("the wrapper offers %s beyond fs.File and the File Op table has no row for it, "+
+				"so nothing proves the Op string it injects is the one the os package reports", optional)
 		}
 	}
 
@@ -288,6 +314,18 @@ func TestInjectedAndRealErrorsAnswerEveryPredicateTheSame(t *testing.T) {
 			},
 			func(t *testing.T) error {
 				return onUnmappedMemory(t, func(f *os.File) error { _, err := f.WriteAt([]byte("xxxxxxxx"), 0); return err })
+			}},
+		{"ReadAt/EIO", faultfs.New,
+			func(f faultfs.File) error {
+				r, ok := readAtOf(f)
+				if !ok {
+					return errors.New("the wrapper does not offer ReadAt")
+				}
+				_, err := r.ReadAt(make([]byte, 8), 0)
+				return err
+			},
+			func(t *testing.T) error {
+				return onUnmappedMemory(t, func(f *os.File) error { _, err := f.ReadAt(make([]byte, 8), 0); return err })
 			}},
 		{"Write/ENOSPC", faultfs.NewShortWrite,
 			func(f faultfs.File) error { _, err := f.Write([]byte("xxxxxxxx")); return err },
