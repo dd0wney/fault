@@ -236,11 +236,15 @@ func TestRunNamesEachFailureOnStderr(t *testing.T) {
 	}
 
 	for _, tc := range []struct{ name, root, registry, profile, wants string }{
-		{"a missing registry", "testdata", filepath.Join(dir, "nope.tsv"), "testdata/profile-mixed.out", "nope.tsv"},
+		// "open " and the path, not the path alone: with the refusal gone the
+		// nil handle reaches parseRegistry, and THAT message names the path
+		// too. The first version of this row asserted the path alone and let
+		// the mutant live.
+		{"a missing registry", "testdata", filepath.Join(dir, "nope.tsv"), "testdata/profile-mixed.out", "open " + filepath.Join(dir, "nope.tsv")},
 		{"a registry declaring nothing", "testdata", "testdata/registry-comments-only.tsv", "testdata/profile-mixed.out", "declares no couplings"},
 		{"an undeclared package", "testdata/mod", registryOnlyA, "testdata/profile-mixed.out", "example.com/mod/b"},
 		{"a symbol nothing declares", "testdata", registryUnknown, "testdata/profile-mixed.out", "the registry and the code disagree"},
-		{"a missing profile", "testdata", "testdata/registry.tsv", filepath.Join(dir, "nope.out"), "nope.out"},
+		{"a missing profile", "testdata", "testdata/registry.tsv", filepath.Join(dir, "nope.out"), "open " + filepath.Join(dir, "nope.out")},
 		{"a missing profile, the hint", "testdata", "testdata/registry.tsv", filepath.Join(dir, "nope.out"), "-coverprofile"},
 		{"a profile that matches nothing", "testdata", "testdata/registry.tsv", "testdata/profile-other-package.out", "matched no statement"},
 	} {
