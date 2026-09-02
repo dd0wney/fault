@@ -59,4 +59,9 @@ func TestRunFailsTheTestWhenThePlanRefuses(t *testing.T) {
 	if !strings.Contains(string(out), "proved nothing") {
 		t.Errorf("the child failed without the diagnostic:\n%s", out)
 	}
+	// Run is a helper, so the line the failure names is the caller's. Without
+	// that, every failing sweep names the same line inside run.go.
+	if !strings.Contains(string(out), "run_fatal_test.go:") {
+		t.Errorf("the failure is not reported at the caller's line:\n%s", out)
+	}
 }

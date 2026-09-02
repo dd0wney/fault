@@ -98,13 +98,23 @@ func TestARecordOverItsByteBudgetIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 72 MiB of recorded bytes against a 64 MiB budget. One buffer is reused,
-	// so the test holds the recorded copies and nothing else.
+	// Exactly the budget, 64 MiB in eight chunks, is within it. One buffer is
+	// reused, so the test holds the recorded copies and nothing else. The
+	// refusal fires on the byte after, so the boundary is pinned from both
+	// sides: a budget one byte smaller, or a comparison that refuses equality,
+	// refuses the eighth chunk, and a budget one byte larger accepts the ninth
+	// byte.
 	chunk := make([]byte, 8<<20)
-	for i := 0; i < 9; i++ {
+	for i := 0; i < 8; i++ {
 		if _, err := f.Write(chunk); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if held := crash.Failure(rec); held != nil {
+		t.Fatalf("64 MiB against a 64 MiB budget was refused: %v", held)
+	}
+	if _, err := f.Write([]byte{0}); err != nil {
+		t.Fatal(err)
 	}
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
@@ -112,7 +122,7 @@ func TestARecordOverItsByteBudgetIsRefused(t *testing.T) {
 
 	held := crash.Failure(rec)
 	if held == nil {
-		t.Fatal("the recorder held no refusal after 72 MiB against a 64 MiB budget")
+		t.Fatal("the recorder held no refusal after 64 MiB and one byte against a 64 MiB budget")
 	}
 	if !strings.Contains(held.Error(), "byte budget") {
 		t.Fatalf("the held refusal is %v, want the byte budget one", held)
