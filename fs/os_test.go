@@ -131,39 +131,61 @@ type opFixture struct {
 
 // opCase is one row: a way to make the real os package fail, the same
 // operation under injection, and the error shape both must have.
+//
+// realClass names the errno the real route produces. It is never the class
+// this package injects: no unprivileged route makes a path operation report
+// EIO or ENOSPC (realerr_test.go records what the two devices give each FS
+// method). differs lists, by name, the predicates in predicate_test.go whose
+// answer the class difference changes: errors.Is(syscall.EIO) on every row,
+// because the injected errno is EIO and the real one is not, and
+// os.IsNotExist on the rows whose real errno is ENOENT. The predicate table
+// requires those to DISAGREE and every other predicate to AGREE, so a stale
+// entry here fails as loudly as a missing one. An earlier version excluded
+// every class predicate as "differs by construction", and a reviewer showed
+// that three of the five agree on every row; the exclusion was a claim, and
+// this list is a checked one.
 type opCase struct {
-	name  string
-	real  func(opFixture) error
-	inj   func(faultfs.FS) error
-	shape errShape
+	name      string
+	real      func(opFixture) error
+	inj       func(faultfs.FS) error
+	shape     errShape
+	realClass string
+	differs   []string
 }
+
+// The predicates whose answer a real ENOENT and an injected EIO differ on.
+var enoentDiffers = []string{"errors.Is(syscall.EIO)", "os.IsNotExist"}
 
 // opCases is package-level so that TestTheOpTableCoversTheFSInterface can
 // compare it against fs.FS. A table local to a test function is invisible to
 // reflection, and that is how Rename went missing from it.
+//
+// It is THE FS-level table. The Op comparison below and the FS-level predicate
+// comparison in predicate_test.go both read it, so there is no second list to
+// drift from this one.
 var opCases = []opCase{
 	{"OpenFile",
 		func(f opFixture) error { _, err := f.real.OpenFile(f.missing, os.O_RDONLY, 0); return err },
 		func(f faultfs.FS) error { _, err := f.OpenFile("x", os.O_RDONLY, 0); return err },
-		pathError},
+		pathError, "ENOENT, from a missing path", enoentDiffers},
 	{"Remove",
 		func(f opFixture) error { return f.real.Remove(f.missing) },
 		func(f faultfs.FS) error { return f.Remove("x") },
-		pathError},
+		pathError, "ENOENT, from a missing path", enoentDiffers},
 	{"Stat",
 		func(f opFixture) error { _, err := f.real.Stat(f.missing); return err },
 		func(f faultfs.FS) error { _, err := f.Stat("x"); return err },
-		pathError},
+		pathError, "ENOENT, from a missing path", enoentDiffers},
 	{"ReadDir",
 		func(f opFixture) error { _, err := f.real.ReadDir(f.missing); return err },
 		func(f faultfs.FS) error { _, err := f.ReadDir("d"); return err },
-		pathError},
+		pathError, "ENOENT, from a missing path", enoentDiffers},
 	{"MkdirAll",
 		// A directory under a regular file: the real MkdirAll reports the
 		// failing syscall, not the helper that called it.
 		func(f opFixture) error { return f.real.MkdirAll(filepath.Join(f.regular, "a", "b"), 0o700) },
 		func(f faultfs.FS) error { return f.MkdirAll("d", 0o700) },
-		pathError},
+		pathError, "ENOTDIR, from a directory under a regular file", []string{"errors.Is(syscall.EIO)"}},
 	{"Rename",
 		// The one row whose error type differs, and the row that was missing
 		// when this table was first compared against the interface. Renaming a
@@ -171,7 +193,38 @@ var opCases = []opCase{
 		// fail.
 		func(f opFixture) error { return f.real.Rename(f.missing, filepath.Join(f.dir, "renamed")) },
 		func(f faultfs.FS) error { return f.Rename("a", "b") },
-		linkError},
+		linkError, "ENOENT, from a missing path", enoentDiffers},
+}
+
+// newOpFixture builds the paths the real routes need.
+func newOpFixture(t *testing.T) opFixture {
+	t.Helper()
+	dir := t.TempDir()
+	regular := filepath.Join(dir, "regular")
+	if err := os.WriteFile(regular, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return opFixture{
+		real:    faultfs.OS(),
+		dir:     dir,
+		regular: regular,
+		missing: filepath.Join(dir, "no-such-directory", "f"),
+	}
+}
+
+// injectedFSError returns what the wrapper injects for inj on the pass that
+// arms its first operation, driven through a sweep rather than a hand-armed
+// Points, for the reason doc.go gives under "Testing an adapter".
+func injectedFSError(t *testing.T, inj func(faultfs.FS) error) error {
+	t.Helper()
+	var injected error
+	for n, p := range fault.Sweep(t) {
+		err := inj(faultfs.New(p, newStub()))
+		if n == 1 {
+			injected = err
+		}
+	}
+	return injected
 }
 
 // The Op strings were measured against the real os package rather than
@@ -187,17 +240,7 @@ var opCases = []opCase{
 // A deliberate decision that no test asserts is indistinguishable from an
 // accident. This is the assertion.
 func TestInjectedOpStringsMatchTheRealOnes(t *testing.T) {
-	dir := t.TempDir()
-	regular := filepath.Join(dir, "regular")
-	if err := os.WriteFile(regular, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	fixture := opFixture{
-		real:    faultfs.OS(),
-		dir:     dir,
-		regular: regular,
-		missing: filepath.Join(dir, "no-such-directory", "f"),
-	}
+	fixture := newOpFixture(t)
 
 	for _, tc := range opCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -219,13 +262,7 @@ func TestInjectedOpStringsMatchTheRealOnes(t *testing.T) {
 				t.Fatalf("the control produced no %s, so this compares nothing", tc.shape.name)
 			}
 
-			var injected error
-			for n, p := range fault.Sweep(t) {
-				err := tc.inj(faultfs.New(p, newStub()))
-				if n == 1 {
-					injected = err
-				}
-			}
+			injected := injectedFSError(t, tc.inj)
 			injOp, ok := tc.shape.op(injected)
 			if !ok {
 				t.Fatalf("injected error is %T, want %s: %v", injected, tc.shape.name, injected)
