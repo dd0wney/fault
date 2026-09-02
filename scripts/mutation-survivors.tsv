@@ -1,0 +1,108 @@
+# package	key	where	reason
+#
+# Every known survivor of scripts/mutation-baseline.tsv, one row each. The
+# score is a scalar and cannot tell a new survivor from an accidental kill
+# that leaves the count the same; this file is the second, structural
+# reading scripts/mutation.sh compares against.
+#
+# key is <file>:<mutator>:<hash16>, where file is the path go-mutesting
+# reports (.mutator.originalFilePath, relative to the gate root) and hash16
+# is the first 16 hex characters of the SHA-256 of the diff's hunk body
+# (the -/+/space lines, header and @@ lines dropped, joined and trimmed).
+# The line number is deliberately NOT part of the key: a line moves when
+# code above it moves and the mutant does not.
+#
+# The gate turns red two ways: an escaped mutant with no row here (NEW
+# SURVIVOR -- something now escapes that this file does not know about),
+# or a row here with no matching escaped mutant (STALE ROW -- a test now
+# kills what used to survive, and the row is out of date). Both are
+# failures for the same reason a stale exclusion fails the predicate table
+# in fs: a list that has drifted from the run is worse than no list.
+#
+# where is file:line mutator at the time the row was written, for a reader
+# only -- the gate never compares it, so it may go stale without harm.
+# reason is one sentence, why no test can observe the mutant; a row with an
+# empty reason is refused (exit 2), because a survivor nobody read is not
+# a survivor anybody can vouch for.
+#
+# Rows for ./ , ./role/ and ./goroutine/ were computed from a report captured
+# at ee9b2bb and matched to the classes this file's own baseline row names.
+# ./crash/'s rows were captured by running the gate itself at ee9b2bb in a
+# scratch worktree with an empty list, and matched to the baseline row and to
+# the commit that reads its 97 survivors (d2d69f6~1). A row not named by
+# either source was read from the function directly when this file was
+# written (C5), and is marked UNREAD in that commit's body rather than here,
+# since the gate does not read a fifth column.
+#
+# observed.go:70's sort.Strings removal escaped one live run and was killed
+# by another at the same commit: TestObservedNamesEveryPathTheRecorderServed
+# builds exactly two paths, so slices.IsSorted(got) is satisfied about half
+# the time by map iteration alone, sort call or not. It is left out of this
+# file on purpose -- a row that is itself a coin flip would make the gate's
+# own verdict a coin flip, which is worse than the gap it would paper over.
+# ./alloc/, ./fs/ and ./sql/
+# carry no rows because their baseline floor is 1.00 with zero survivors.
+./	sweep.go:expression/comparison:57ed2faa28e07ea8	sweep.go:91 expression/comparison	n > maxOps vs n >= maxOps is > vs >= on the same arbitrary bound no scenario reaches, so the two forms agree on every input any test supplies.
+./	sweep.go:numbers/decrementer:aead8c681a969153	sweep.go:18 numbers/decrementer	maxOps=512 is an arbitrary bound with wide headroom -- the baseline records 52 of 512 as the largest sweep seen -- so 511 changes no test outcome.
+./	sweep.go:numbers/incrementer:94c73dbe0baf3564	sweep.go:18 numbers/incrementer	maxOps=512 is an arbitrary bound with wide headroom, so 513 changes no test outcome, the same equivalence as the decremented form.
+./	sweep.go:statement/remove:ea6aae762008862c	sweep.go:56 statement/remove	t.Helper() only changes which line a failure is attributed to, never a test's pass or fail outcome.
+./role/	role/points.go:branch/if:2eef5e9e5542a089	role/points.go:46 branch/if	TestAnEmptyRoleBecomesUnknown compares only pass counts between an empty role and role.Unknown, and the pass count does not depend on which string keys a non-target role, so removing the conversion changes no assertion.
+./role/	role/points.go:expression/remove:78cbd933ccafeb2a	role/points.go:63 expression/remove	newPoints is unexported and every caller passes armed = n from walk, where n starts at 1, so no exported call can construct a Points with armed == 0 for this guard to protect against.
+./role/	role/points.go:numbers/decrementer:9b8c021e3c2e922b	role/points.go:63 numbers/decrementer	the same armed == 0 guard: no exported call can construct a Points with armed == 0 or armed == -1, so decrementing the literal changes nothing a test can reach.
+./role/	role/points.go:statement/remove:47d4af8908ae5c08	role/points.go:80 statement/remove	p.mu.Lock() in firedKey guards a data race that only -race detects, and go-mutesting does not run with -race.
+./role/	role/sweep.go:branch/if:6df0d409a7fc8288	role/sweep.go:32 branch/if	every test that drives an error out of walk calls role.Walk directly rather than Sweep, so Sweep's own err != nil branch is never reached with a non-nil err by any test.
+./role/	role/sweep.go:branch/if:1d4be51d13c5f15f	role/sweep.go:108 branch/if	no test's yield callback ever returns false, so the early-return path this branch guards is never taken.
+./role/	role/sweep.go:branch/if:bf684570493d7fd8	role/sweep.go:135 branch/if	no test inspects t.Logf output, so the whole block that logs the structural key on a first failure is unobserved by any assertion.
+./role/	role/sweep.go:expression/comparison:cc342c052cd35b6b	role/sweep.go:99 expression/comparison	no scenario reaches maxOps operations, so n > maxOps and n >= maxOps agree on every input any test supplies.
+./role/	role/sweep.go:expression/remove:0158249aaf756379	role/sweep.go:133 expression/remove	no test inspects t.Logf output, so gating the structural-key log to only the first failing pass is unobserved by any assertion.
+./role/	role/sweep.go:loop/break:f1dd7d278c6592e0	role/sweep.go:120 loop/break	every test's stability check either mismatches at the first compared index or matches at every compared index, so continuing past the first match instead of stopping there changes no test's outcome.
+./role/	role/sweep.go:numbers/decrementer:9f77f3d578f9938b	role/sweep.go:12 numbers/decrementer	maxOps is an arbitrary bound no scenario approaches, the same equivalence the ./ package's own maxOps carries at the identical pattern.
+./role/	role/sweep.go:numbers/incrementer:d243cda13ac391da	role/sweep.go:12 numbers/incrementer	maxOps is an arbitrary bound no scenario approaches, so incrementing the literal changes no test outcome either.
+./role/	role/sweep.go:statement/remove:3ca0f4594d093bee	role/sweep.go:30 statement/remove	t.Helper() in Sweep only changes which line a failure is attributed to, never a test's pass or fail outcome.
+./role/	role/sweep.go:statement/remove:5c95ff61be4b5e85	role/sweep.go:95 statement/remove	t.Helper() in walk only changes which line a failure is attributed to, never a test's pass or fail outcome.
+./goroutine/	goroutine/goroutine.go:branch/if:5f942b3453c8b571	goroutine/goroutine.go:131 branch/if	a block whose head does not start with "goroutine " also fails strconv.ParseUint on the same head moments later, so the early return this branch guards and the later one return the same (0, "", false) either way.
+./goroutine/	goroutine/goroutine.go:numbers/decrementer:564ea5b51f2464df	goroutine/goroutine.go:171 numbers/decrementer	one of the five initial-buffer-size variants the baseline records; the growth loop converges to the same final size whatever it starts at.
+./goroutine/	goroutine/goroutine.go:numbers/decrementer:83b9077f03abe5a1	goroutine/goroutine.go:171 numbers/decrementer	one of the five initial-buffer-size variants the baseline records; the growth loop converges to the same final size whatever it starts at.
+./goroutine/	goroutine/goroutine.go:numbers/incrementer:9ee10cc0dd75fd90	goroutine/goroutine.go:131 numbers/incrementer	one of the two return 1, "", false variants the baseline records: the id is ignored by every caller, which checks ok first.
+./goroutine/	goroutine/goroutine.go:numbers/incrementer:f9701986bce4cfd9	goroutine/goroutine.go:142 numbers/incrementer	the second of the two return 1, "", false variants the baseline records: the id is ignored by every caller, which checks ok first.
+./goroutine/	goroutine/goroutine.go:numbers/incrementer:283dedc757887e02	goroutine/goroutine.go:171 numbers/incrementer	one of the five initial-buffer-size variants the baseline records; the growth loop converges to the same final size whatever it starts at.
+./goroutine/	goroutine/goroutine.go:numbers/incrementer:b014b76fe988826a	goroutine/goroutine.go:171 numbers/incrementer	one of the five initial-buffer-size variants the baseline records; the growth loop converges to the same final size whatever it starts at.
+./goroutine/	goroutine/goroutine.go:numbers/incrementer:8ae41daf8553dec1	goroutine/goroutine.go:171 numbers/incrementer	one of the five initial-buffer-size variants the baseline records; the growth loop converges to the same final size whatever it starts at.
+./goroutine/	goroutine/goroutine.go:statement/remove:3ee34ba75a2fb081	goroutine/goroutine.go:93 statement/remove	removing time.Sleep(time.Millisecond) turns the settle wait into a busy loop with identical output, which the baseline records as equivalent.
+./goroutine/	goroutine/goroutine.go:statement/remove:6ca1d1bce4cc6f3f	goroutine/goroutine.go:105 statement/remove	removing sort.Strings changes only report order, which no test pins because map iteration order is not fixed.
+./crash/	crash/name.go:expression/comparison:9580d316e8bcd8cf	crash/name.go:81 expression/comparison	the sort comparator on distinct n: all[i].n values are each write's original sequence position, never equal, so < and <= order them the same way.
+./crash/	crash/name.go:statement/remove:645e2a04cc2f8f00	crash/name.go:113 statement/remove	b.Grow is a capacity hint only; removing it changes no output, only how many times the builder reallocates.
+./crash/	crash/rebuild.go:branch/if:52a63da249b7100a	crash/rebuild.go:136 branch/if	one of the three grow-or-shrink comparisons at equality: emptying resize's shrink branch falls through to the grow path, which for size <= len(dst) copies the same first `size` bytes append would have kept.
+./crash/	crash/rebuild.go:expression/comparison:4588258df5f8c1a0	crash/rebuild.go:123 expression/comparison	one of the three grow-or-shrink comparisons at equality, in writeAt's own length check.
+./crash/	crash/rebuild.go:expression/comparison:ff834481c931e81e	crash/rebuild.go:135 expression/comparison	one of the three grow-or-shrink comparisons at equality, in resize's own length check.
+./crash/	crash/rebuild.go:expression/remove:aeabb74b5be8d88b	crash/rebuild.go:17 expression/remove	whole() on a unit no constructor makes: nothing builds a unit with exactly one of from, to equal to zero, so u.from == 0 can be removed from the compound condition without changing any result.
+./crash/	crash/rebuild.go:expression/remove:f4b55e5a5665a884	crash/rebuild.go:41 expression/remove	the mutates check: no case in the switch below ever matches a non-mutating kind, so !e.k.mutates() can be removed from the compound condition without changing any result.
+./crash/	crash/rebuild.go:numbers/decrementer:a07207f8f70be1fe	crash/rebuild.go:93 numbers/decrementer	presentRanges' len(lost) == -1 form: only size 0 tells len(lost) == 0 apart from len(lost) == -1, and both forms write nothing for a zero-length input.
+./crash/	crash/record.go:branch/if:e3f2849f2f0ceddb	crash/record.go:358 branch/if	the MkdirAll fall-through: levels("") is empty, so the loop after this early return would do nothing anyway when the path does not resolve.
+./crash/	crash/record.go:numbers/decrementer:02cec8529978edad	crash/record.go:214 numbers/decrementer	the initial size under a failed Stat: the held refusal masks it, so decrementing the placeholder changes nothing a test can reach.
+./crash/	crash/record.go:numbers/incrementer:68bb5220f9f44a5a	crash/record.go:214 numbers/incrementer	the same initial-size-under-a-failed-Stat equivalence, incrementing rather than decrementing the placeholder.
+./crash/	crash/run.go:arithmetic/base:e8f0fb4370369c6f	crash/run.go:90 arithmetic/base	the map capacity hint: make(map[int]bool, n) clamps a negative n to zero, so a hint computed the wrong way still only costs a reallocation.
+./crash/	crash/run.go:branch/if:a0e85801613b3c58	crash/run.go:140 branch/if	the errNoStates guard, unreachable today as its own comment says: points is never empty, subsets always returns at least one lost set, and the first fingerprint cannot already be in an empty seen map.
+./crash/	crash/run.go:branch/if:14d20ed90b5c5f03	crash/run.go:195 branch/if	the readTree before the states run: the control already read the same root a moment earlier, so a fixture that fails here would already have failed there.
+./crash/	crash/run.go:branch/if:f74018ee07ce8b01	crash/run.go:241 branch/if	the writeTo failure: no fixture makes a fresh t.TempDir() refuse a tree.
+./crash/	crash/run.go:expression/comparison:8b446fcd2ec127c9	crash/run.go:155 expression/comparison	one of two sort comparators on keys (crash point) that are already distinct in every fixture, so < and <= order them the same way.
+./crash/	crash/run.go:expression/comparison:18de6d6f3ccf6e3b	crash/run.go:157 expression/comparison	the second of two sort comparators, on the name, which is likewise already distinct.
+./crash/	crash/run.go:numbers/decrementer:ed2711ff0d2b565f	crash/run.go:139 numbers/decrementer	the errNoStates guard's == -1 form, the same unreachable condition its comment describes.
+./crash/	crash/snapshot.go:branch/if:547622e23bb6c134	crash/snapshot.go:33 branch/if	the Rel error, on a path filepath.WalkDir itself built and so always resolves under root.
+./crash/	crash/snapshot.go:branch/if:93be91cc1f15464c	crash/snapshot.go:41 branch/if	the DirEntry.Info error: a race with the filesystem between the walk and the stat, not a condition a fixture can force.
+./crash/	crash/snapshot.go:branch/if:bfea8b6dbc4c7335	crash/snapshot.go:84 branch/if	the MkdirAll of a parent directory: the WriteFile that follows fails for the same underlying cause when the parent cannot be made.
+./crash/	crash/snapshot.go:expression/remove:a725fa1927220c91	crash/snapshot.go:130 expression/remove	the dir check in diffTree: a directory node carries no data, so bytes.Equal on both sides' always-empty data agrees whether or not !w.dir guards it.
+./crash/	crash/state.go:branch/case:9683d5015b697b61	crash/state.go:59 branch/case	the non-mutating continue: case !e.k.mutates(): continue emptied still reaches the switch below, where no case matches a non-mutating kind, so the second loop skips the entry either way.
+./crash/	crash/state.go:expression/comparison:a5fc3810599bc854	crash/state.go:105 expression/comparison	one of the len(data)>0 guard's three equivalent forms: >= 0 instead of > 0, which len() can never make false anyway.
+./crash/	crash/state.go:expression/comparison:e684bf5d67e225d3	crash/state.go:140 expression/comparison	the sector clamp at equality: next > end vs next >= end, the same boundary either way once next == end clamps to end.
+./crash/	crash/state.go:expression/remove:958e626f7cda77a5	crash/state.go:52 expression/remove	one of the e.dir and e.data kind checks: only a sync entry ever has dir set, so case true && e.dir matches the same entries as case e.k == kSync && e.dir.
+./crash/	crash/state.go:expression/remove:111259957e486a35	crash/state.go:105 expression/remove	one of the len(data)>0 guard's three equivalent forms: removed outright as always-true.
+./crash/	crash/state.go:expression/remove:08ebe6be4018df15	crash/state.go:105 expression/remove	the other of the e.dir and e.data kind checks: only a write entry ever has data, so e.k == kWrite can be dropped from the compound condition without changing which entries are splittable.
+./crash/	crash/state.go:expression/remove:252b778d3b251ee3	crash/state.go:106 expression/remove	the SplitAtCrashOnly guard, which only ever assigns splittable = false and is still reached through m.SplitAtCrashOnly when its own clause is removed.
+./crash/	crash/state.go:loop/break:f7c220486643b139	crash/state.go:54 loop/break	one of the three continue-to-break mutations inside the sync switch: a switch has no loop of its own for break to affect, so it falls out to the enclosing for exactly as continue would.
+./crash/	crash/state.go:loop/break:857542847daf1ba2	crash/state.go:57 loop/break	the second of the three continue-to-break mutations inside the sync switch.
+./crash/	crash/state.go:loop/break:ee824c0cdd2a47f7	crash/state.go:59 loop/break	the third of the three continue-to-break mutations inside the sync switch.
+./crash/	crash/state.go:loop/break:f80bea5f5c850b2a	crash/state.go:179 loop/break	the closure break-to-continue: out[e.n] = false and changed = true are already set before it, so continuing to check the entry's remaining needs makes the same assignments break would have stopped after.
+./crash/	crash/state.go:numbers/decrementer:7ee517d520ce049b	crash/state.go:105 numbers/decrementer	one of the len(data)>0 guard's three equivalent forms: > -1 instead of > 0, which len() can never make false either way.
+./crash/	crash/state.go:numbers/decrementer:a12f21c02b5e1f37	crash/state.go:219 numbers/decrementer	n >= 62 instead of n >= 63: refused by the maxStates cap with the same message before the difference is reachable.
+./crash/	crash/state.go:numbers/incrementer:9a0cc4c1007a92a2	crash/state.go:105 numbers/incrementer	the len(data)>0 guard's > 1 form: Write and WriteAt record only when n > 0, so no record ever holds an empty write for > 1 to differ on.
