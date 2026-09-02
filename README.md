@@ -175,6 +175,17 @@ go test ./...                          # 287 tests, counted with go test -list o
 Every gate ships with a selftest that runs **first**, because a gate that cannot
 report a violation and a gate with nothing to report print the same thing.
 
+The mutation gate also checks a second, structural reading. `mutation.sh`
+compares one score to a floor, which cannot tell a new survivor from an
+accidental kill that leaves the score the same. It also reads
+`mutation-survivors.tsv`, beside the baseline: one row per known survivor,
+keyed by the file, the mutator, and a hash of the diff's hunk body, never the
+line number. An escaped mutant with no row turns the gate red (`NEW
+SURVIVOR`), and so does a row with no matching escaped mutant (`STALE ROW`),
+because a list that has drifted from the run is worse than no list. To add a
+row, paste the one the gate prints, then replace `TODO: read it` with the
+reason after reading the function.
+
 ## Credits
 
 The design of `fault/role` — the per-actor sweep, its stability check, and the
