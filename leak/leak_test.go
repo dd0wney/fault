@@ -93,3 +93,36 @@ func TestReportReportsEveryCounterNotJustTheFirst(t *testing.T) {
 		t.Errorf("Report(first, second) = %v, want %v", got, want)
 	}
 }
+
+// TestReportSaysWhenOutstandingAndOpenPathsDisagree pins the reading a Namer
+// gives when the two answers disagree: Outstanding gives the count, OpenPaths
+// gives the names, and Report states each rather than picking one over the
+// other.
+func TestReportSaysWhenOutstandingAndOpenPathsDisagree(t *testing.T) {
+	n := namerFake{outstanding: 2, maxOut: 2, paths: []string{"c", "a", "b"}}
+
+	got := Report(n)
+	want := fmt.Sprintf("%T still holds 2, and OpenPaths names 3: a, b, c", n)
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("Report(%+v) = %v, want [%q]", n, got, want)
+	}
+}
+
+// TestReportGivenANilCounterSaysSoInsteadOfPanicking pins change 4: a nil
+// counter used to reach MaxOutstanding on a nil interface and panic. The
+// recover below turns that panic into a clean, readable test failure rather
+// than crashing the whole test binary, so this test can show its own red
+// phase without taking every other test in the package down with it.
+func TestReportGivenANilCounterSaysSoInsteadOfPanicking(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Report(nil) panicked instead of naming the nil counter: %v", r)
+		}
+	}()
+
+	got := Report(nil)
+	want := "leak: a nil counter was given, so this check proved nothing"
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("Report(nil) = %v, want [%q]", got, want)
+	}
+}
