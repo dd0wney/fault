@@ -242,18 +242,21 @@ func TestTheHashedNameCarriesSixteenHexCharacters(t *testing.T) {
 // A truncate and a rename of a path no present entry created are refused, as
 // a write and a remove are. Each would otherwise invent a file.
 func TestReplayRefusesToTruncateOrRenameAFileNoPresentEntryCreated(t *testing.T) {
-	cases := map[string]entry{
-		"truncate": {n: 2, k: kTruncate, path: "a", size: 0, needs: []int{1}},
-		"rename":   {n: 2, k: kRename, path: "a", to: "b", needs: []int{1}},
+	cases := map[string]struct {
+		entry entry
+		verb  string
+	}{
+		"truncate": {entry: entry{n: 2, k: kTruncate, path: "a", size: 0, needs: []int{1}}, verb: "truncates"},
+		"rename":   {entry: entry{n: 2, k: kRename, path: "a", to: "b", needs: []int{1}}, verb: "renames"},
 	}
-	for name, e := range cases {
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			entries := []entry{{n: 1, k: kCreate, path: "a"}, e}
+			entries := []entry{{n: 1, k: kCreate, path: "a"}, c.entry}
 			// entry 1, the create, is absent -- only the entry that names it is
 			// present.
 			got, err := replay(tree{}, entries, map[int]bool{2: true}, nil)
-			if err == nil || !strings.Contains(err.Error(), "no present entry created") {
-				t.Fatalf("replay = %v, %v, want the no-present-entry-created refusal", err, got)
+			if err == nil || !strings.Contains(err.Error(), c.verb) || !strings.Contains(err.Error(), "no present entry created") {
+				t.Fatalf("replay returned tree %v and error %v, want the %s no-present-entry-created refusal", got, err, c.verb)
 			}
 		})
 	}

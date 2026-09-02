@@ -13,7 +13,7 @@ func TestSectorZeroLosesAWholeWriteCall(t *testing.T) {
 		t.Fatalf("got %d units, want 1 for a whole call", len(got))
 	}
 	if !got[0].whole() {
-		t.Errorf("unit = %+v, want a whole unit — Sector 0 never splits", got[0])
+		t.Errorf("unit = %+v, want a whole unit -- Sector 0 never splits", got[0])
 	}
 	if got[0].entry != 1 {
 		t.Errorf("unit entry = %d, want 1", got[0].entry)
