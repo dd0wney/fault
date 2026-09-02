@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -21,8 +22,9 @@ import (
 // boundaries.
 func TestParseSkipsAnEmptyLineAndReadsPastIt(t *testing.T) {
 	p := mustParse(t, "mode: set\na.go:1.1,2.1 1 1\n\nb.go:1.1,2.1 1 0\n")
-	if len(p.order) != 2 {
-		t.Fatalf("%d blocks, want 2: the block after the empty line was dropped", len(p.order))
+	want := []string{"a.go:1.1,2.1", "b.go:1.1,2.1"}
+	if !slices.Equal(p.order, want) {
+		t.Fatalf("order = %q, want %q: the block after the empty line was dropped", p.order, want)
 	}
 }
 
