@@ -178,23 +178,27 @@ func TestMeasureRefusesAProfileThatMatchesNothing(t *testing.T) {
 	defer f.Close()
 
 	_, err = measure(f, sites)
-	if err == nil {
-		t.Error("measure accepted a profile covering a different package, want an error")
+	if err == nil || !strings.Contains(err.Error(), "matched no statement") {
+		t.Errorf("measure = %v, want the matched-no-statement refusal", err)
 	}
 }
 
 func TestMeasureRefusesAnUnreadableProfile(t *testing.T) {
 	sites := mustResolve(t)
-	for _, name := range []string{"testdata/profile-empty.out", "testdata/profile-truncated.out"} {
-		t.Run(name, func(t *testing.T) {
-			f, err := os.Open(name)
+	cases := []struct{ name, want string }{
+		{"testdata/profile-empty.out", `no "mode:" header`},
+		{"testdata/profile-truncated.out", "fields, want 3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := os.Open(tc.name)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer f.Close()
 			_, err = measure(f, sites)
-			if err == nil {
-				t.Error("measure accepted it, want an error")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("measure = %v, want a refusal containing %q", err, tc.want)
 			}
 		})
 	}
@@ -255,8 +259,8 @@ func TestAnExemptionSatisfiesCompleteness(t *testing.T) {
 // that introduces the exemption.
 func TestAnExemptionNeedsAReason(t *testing.T) {
 	_, err := parseRegistry(strings.NewReader("X1\texempt\texample.com/mod/b\t-\t\t\n"))
-	if err == nil {
-		t.Error("parseRegistry accepted an exemption with no reason")
+	if err == nil || !strings.Contains(err.Error(), "no reason given") {
+		t.Errorf("parseRegistry = %v, want the no-reason-given refusal", err)
 	}
 }
 
