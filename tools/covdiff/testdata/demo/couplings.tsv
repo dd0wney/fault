@@ -1,0 +1,4 @@
+# id	kind	package	symbol	lines	note
+D1	control	demo/config	Limit	25-25	the default limit, which app depends on and store never checks. Line 25 is the return inside the open-failure branch, which is where a coverage block starts.
+D2	data	demo/store	Write		the bytes app hands over, and every error path that removes the temporary
+D3	control	demo/app	Save		app decides from config how much reaches store
