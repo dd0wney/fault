@@ -144,13 +144,22 @@ type opFixture struct {
 // every class predicate as "differs by construction", and a reviewer showed
 // that three of the five agree on every row; the exclusion was a claim, and
 // this list is a checked one.
+//
+// differsOnWindows replaces differs there, for the one row whose real class is
+// not the same on both. MEASURED 2026-09-02 by Windows CI on the first run of
+// this table: MkdirAll under a regular file reports ERROR_PATH_NOT_FOUND on
+// Windows, and os.IsNotExist answers true to it, where POSIX reports ENOTDIR
+// and os.IsNotExist answers false. The same tightness that makes a stale
+// entry fail is what found this: the row said "agree", Windows said "differ",
+// and the test refused rather than skipped.
 type opCase struct {
-	name      string
-	real      func(opFixture) error
-	inj       func(faultfs.FS) error
-	shape     errShape
-	realClass string
-	differs   []string
+	name             string
+	real             func(opFixture) error
+	inj              func(faultfs.FS) error
+	shape            errShape
+	realClass        string
+	differs          []string
+	differsOnWindows []string
 }
 
 // The predicates whose answer a real ENOENT and an injected EIO differ on.
@@ -167,25 +176,27 @@ var opCases = []opCase{
 	{"OpenFile",
 		func(f opFixture) error { _, err := f.real.OpenFile(f.missing, os.O_RDONLY, 0); return err },
 		func(f faultfs.FS) error { _, err := f.OpenFile("x", os.O_RDONLY, 0); return err },
-		pathError, "ENOENT, from a missing path", enoentDiffers},
+		pathError, "ENOENT, from a missing path", enoentDiffers, nil},
 	{"Remove",
 		func(f opFixture) error { return f.real.Remove(f.missing) },
 		func(f faultfs.FS) error { return f.Remove("x") },
-		pathError, "ENOENT, from a missing path", enoentDiffers},
+		pathError, "ENOENT, from a missing path", enoentDiffers, nil},
 	{"Stat",
 		func(f opFixture) error { _, err := f.real.Stat(f.missing); return err },
 		func(f faultfs.FS) error { _, err := f.Stat("x"); return err },
-		pathError, "ENOENT, from a missing path", enoentDiffers},
+		pathError, "ENOENT, from a missing path", enoentDiffers, nil},
 	{"ReadDir",
 		func(f opFixture) error { _, err := f.real.ReadDir(f.missing); return err },
 		func(f faultfs.FS) error { _, err := f.ReadDir("d"); return err },
-		pathError, "ENOENT, from a missing path", enoentDiffers},
+		pathError, "ENOENT, from a missing path", enoentDiffers, nil},
 	{"MkdirAll",
 		// A directory under a regular file: the real MkdirAll reports the
 		// failing syscall, not the helper that called it.
 		func(f opFixture) error { return f.real.MkdirAll(filepath.Join(f.regular, "a", "b"), 0o700) },
 		func(f faultfs.FS) error { return f.MkdirAll("d", 0o700) },
-		pathError, "ENOTDIR, from a directory under a regular file", []string{"errors.Is(syscall.EIO)"}},
+		pathError, "ENOTDIR on POSIX and ERROR_PATH_NOT_FOUND on Windows, from a directory under a regular file",
+		[]string{"errors.Is(syscall.EIO)"},
+		enoentDiffers},
 	{"Rename",
 		// The one row whose error type differs, and the row that was missing
 		// when this table was first compared against the interface. Renaming a
@@ -193,7 +204,7 @@ var opCases = []opCase{
 		// fail.
 		func(f opFixture) error { return f.real.Rename(f.missing, filepath.Join(f.dir, "renamed")) },
 		func(f faultfs.FS) error { return f.Rename("a", "b") },
-		linkError, "ENOENT, from a missing path", enoentDiffers},
+		linkError, "ENOENT, from a missing path", enoentDiffers, nil},
 }
 
 // newOpFixture builds the paths the real routes need.

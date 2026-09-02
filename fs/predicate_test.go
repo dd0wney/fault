@@ -316,9 +316,16 @@ func TestInjectedAndRealFSErrorsAnswerEveryPredicateAsTheClassPredicts(t *testin
 			}
 			injected := injectedFSError(t, tc.inj)
 
+			// The real class is a fact about the os package on this platform,
+			// and one row's class differs on Windows. The row says which.
+			differs := tc.differs
+			if runtime.GOOS == "windows" && tc.differsOnWindows != nil {
+				differs = tc.differsOnWindows
+			}
+
 			for _, p := range predicates {
 				wantAnswer, gotAnswer := p.ask(real), p.ask(injected)
-				if slices.Contains(tc.differs, p.name) {
+				if slices.Contains(differs, p.name) {
 					if wantAnswer == gotAnswer {
 						t.Errorf("%s: listed as differing by construction between a real %s and an "+
 							"injected EIO, and both answer %v. The differs list is stale, and a stale "+
@@ -332,7 +339,7 @@ func TestInjectedAndRealFSErrorsAnswerEveryPredicateAsTheClassPredicts(t *testin
 						"the injected error than it would against the real one", p.name, wantAnswer, gotAnswer)
 				}
 			}
-			for _, name := range tc.differs {
+			for _, name := range differs {
 				if !slices.ContainsFunc(predicates, func(p predicate) bool { return p.name == name }) {
 					t.Errorf("differs names %q, which is not a predicate in the table", name)
 				}
